@@ -3,8 +3,6 @@ provider "aws" {
 }
 
 # --- 1. Data Sources ---
-
-# Get latest Ubuntu 20.04 AMI
 data "aws_ami" "ubuntu" {
   most_recent = true
   filter {
@@ -15,16 +13,14 @@ data "aws_ami" "ubuntu" {
     name   = "virtualization-type"
     values = ["hvm"]
   }
-  owners = ["099720109477"] # Canonical
+  owners = ["099720109477"]
 }
 
-# Verify the existing Lab IAM Profile
 data "aws_iam_instance_profile" "lab_profile" {
   name = var.iam_instance_profile_name
 }
 
-# --- 2. Network (VPC & Subnets) ---
-
+# --- 2. Network ---
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
@@ -59,14 +55,10 @@ resource "aws_subnet" "private_db" {
   tags = { Name = "Private-Subnet-DB" }
 }
 
-# --- 3. Network ACLs (3-Layer Architecture) ---
-
-# A. Public Layer (Master Node)
+# --- 3. Network ACLs ---
 resource "aws_network_acl" "public_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.public.id]
-
-  # Inbound: HTTP (80) & Jenkins (8080) from Internet
   ingress {
     protocol   = "tcp"
     rule_no    = 100
@@ -75,8 +67,6 @@ resource "aws_network_acl" "public_acl" {
     from_port  = 80
     to_port    = 8080
   }
-
-  # Inbound: SSH (22)
   ingress {
     protocol   = "tcp"
     rule_no    = 110
@@ -85,8 +75,6 @@ resource "aws_network_acl" "public_acl" {
     from_port  = 22
     to_port    = 22
   }
-
-  # Inbound: Ephemeral (Return traffic)
   ingress {
     protocol   = "tcp"
     rule_no    = 120
@@ -95,8 +83,6 @@ resource "aws_network_acl" "public_acl" {
     from_port  = 1024
     to_port    = 65535
   }
-
-  # Outbound: Allow All
   egress {
     protocol   = "-1"
     rule_no    = 100
@@ -105,16 +91,12 @@ resource "aws_network_acl" "public_acl" {
     from_port  = 0
     to_port    = 0
   }
-
   tags = { Name = "Public-NACL" }
 }
 
-# B. App Layer (Services)
 resource "aws_network_acl" "app_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.private_app.id]
-
-  # Inbound: From Public Subnet (Master commands)
   ingress {
     protocol   = "tcp"
     rule_no    = 100
@@ -123,8 +105,6 @@ resource "aws_network_acl" "app_acl" {
     from_port  = 0
     to_port    = 65535
   }
-
-  # Inbound: From DB Subnet (Return traffic from DB)
   ingress {
     protocol   = "tcp"
     rule_no    = 110
@@ -133,8 +113,6 @@ resource "aws_network_acl" "app_acl" {
     from_port  = 1024
     to_port    = 65535
   }
-
-  # Outbound: Allow All
   egress {
     protocol   = "-1"
     rule_no    = 100
@@ -143,16 +121,12 @@ resource "aws_network_acl" "app_acl" {
     from_port  = 0
     to_port    = 0
   }
-
   tags = { Name = "App-NACL" }
 }
 
-# C. DB Layer (Database)
 resource "aws_network_acl" "db_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.private_db.id]
-
-  # Inbound: From App Services (MongoDB 27017)
   ingress {
     protocol   = "tcp"
     rule_no    = 100
@@ -161,8 +135,6 @@ resource "aws_network_acl" "db_acl" {
     from_port  = 27017
     to_port    = 27017
   }
-
-  # Inbound: SSH from within VPC
   ingress {
     protocol   = "tcp"
     rule_no    = 110
@@ -171,8 +143,6 @@ resource "aws_network_acl" "db_acl" {
     from_port  = 22
     to_port    = 22
   }
-
-  # Outbound: Ephemeral (Reply to App Services)
   egress {
     protocol   = "tcp"
     rule_no    = 100
@@ -181,34 +151,29 @@ resource "aws_network_acl" "db_acl" {
     from_port  = 1024
     to_port    = 65535
   }
-
   tags = { Name = "DB-NACL" }
 }
 
-# --- 4. Security Groups ---
+# --- 4. Security Groups (FIXED: No Cycles) ---
 
-# A. Master SG (Jenkins & K8s)
+# A. Master SG
 resource "aws_security_group" "master_sg" {
   name   = "master-sg"
   vpc_id = aws_vpc.main.id
 
-  # Inbound: Jenkins UI (8080) from Internet
+  # Internet Ingress
   ingress {
     from_port   = var.jenkins_port
     to_port     = var.jenkins_port
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  # Inbound: HTTP (80) from Internet
   ingress {
     from_port   = var.http_port
     to_port     = var.http_port
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  # Inbound: SSH (22)
   ingress {
     from_port   = 22
     to_port     = 22
@@ -216,16 +181,6 @@ resource "aws_security_group" "master_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Inbound: K3s API (6443) from Service Nodes Only
-  # (Allows Service Nodes to register with the Master)
-  ingress {
-    from_port       = var.k8s_port
-    to_port         = var.k8s_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.services_sg.id]
-  }
-
-  # Outbound: Full Access
   egress {
     from_port   = 0
     to_port     = 0
@@ -234,31 +189,19 @@ resource "aws_security_group" "master_sg" {
   }
 }
 
-# B. Services SG (CONSOLIDATED & FIXED)
-# Allows Master Node full access for Kubernetes management
+# B. Services SG
 resource "aws_security_group" "services_sg" {
   name   = "services-sg"
   vpc_id = aws_vpc.main.id
 
-  # 1. Allow Master Node FULL access (Command & Control for K8s)
+  # SSH from VPC (Debugging)
   ingress {
-    description     = "Allow Master Node to manage Services"
-    from_port       = 0
-    to_port         = 65535
-    protocol        = "tcp"
-    security_groups = [aws_security_group.master_sg.id]
-  }
-
-  # 2. Allow SSH from internal VPC
-  ingress {
-    description = "Allow SSH from internal VPC"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr]
   }
 
-  # 3. Allow Outbound (To DB and Internet)
   egress {
     from_port   = 0
     to_port     = 0
@@ -267,12 +210,12 @@ resource "aws_security_group" "services_sg" {
   }
 }
 
-# C. DB SG (MongoDB)
+# C. DB SG
 resource "aws_security_group" "db_sg" {
   name   = "db-sg"
   vpc_id = aws_vpc.main.id
 
-  # Inbound: MongoDB (27017) from Service Nodes Only
+  # Allow Mongo from Services
   ingress {
     from_port       = var.mongodb_port
     to_port         = var.mongodb_port
@@ -280,7 +223,7 @@ resource "aws_security_group" "db_sg" {
     security_groups = [aws_security_group.services_sg.id]
   }
 
-  # Inbound: SSH (22) from internal
+  # Allow SSH from VPC
   ingress {
     from_port   = 22
     to_port     = 22
@@ -296,8 +239,29 @@ resource "aws_security_group" "db_sg" {
   }
 }
 
-# --- 5. Instances ---
+# --- D. The Cycle Breakers (Separate Rules) ---
 
+# Allow Services -> Master (K8s API)
+resource "aws_security_group_rule" "master_ingress_k8s" {
+  type                     = "ingress"
+  from_port                = var.k8s_port
+  to_port                  = var.k8s_port
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.services_sg.id
+  security_group_id        = aws_security_group.master_sg.id
+}
+
+# Allow Master -> Services (Full Control)
+resource "aws_security_group_rule" "services_ingress_master" {
+  type                     = "ingress"
+  from_port                = 0
+  to_port                  = 65535
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.master_sg.id
+  security_group_id        = aws_security_group.services_sg.id
+}
+
+# --- 5. Instances ---
 resource "aws_instance" "master_node" {
   ami                  = data.aws_ami.ubuntu.id
   instance_type        = var.master_instance_type
@@ -305,7 +269,6 @@ resource "aws_instance" "master_node" {
   iam_instance_profile = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.master_sg.id]
   key_name             = "vockey"
-
   tags = { Name = "Master-Node" }
 }
 
@@ -317,7 +280,6 @@ resource "aws_instance" "app_services" {
   iam_instance_profile = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.services_sg.id]
   key_name             = "vockey"
-
   tags = { Name = "Service-${count.index + 1}" }
 }
 
@@ -328,12 +290,10 @@ resource "aws_instance" "db_instance" {
   iam_instance_profile = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.db_sg.id]
   key_name             = "vockey"
-
   tags = { Name = "DB-Instance" }
 }
 
 # --- 6. Route Tables ---
-
 resource "aws_route_table" "public_rt" {
   vpc_id = aws_vpc.main.id
   route {
