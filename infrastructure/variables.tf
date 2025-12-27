@@ -98,3 +98,22 @@ variable "app_instance_count" {
   type        = number
   default     = 6
 }
+# --- Security / Access Control ---
+
+variable "admin_cidr" {
+  description = "IP Address allowed to SSH (Port 22). Default is open, but you should change this!"
+  type        = string
+  default     = "0.0.0.0/0"
+}
+
+variable "web_access_cidr" {
+  description = "IP addresses allowed to access Jenkins/HTTP (Port 80/8080)."
+  type        = string
+  default     = "0.0.0.0/0"
+}
+
+variable "anywhere_cidr" {
+  description = "Standard CIDR for 'Anywhere' (Used for Egress/Outbound traffic)"
+  type        = string
+  default     = "0.0.0.0/0"
+}

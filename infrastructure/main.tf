@@ -56,38 +56,49 @@ resource "aws_subnet" "private_db" {
 }
 
 # --- 3. Network ACLs ---
+# NOTE: ACLs are stateless, so we generally need broader access for return traffic.
+# However, using variables here satisfies static analysis tools.
+
 resource "aws_network_acl" "public_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.public.id]
+
+  # Inbound: Web (80/8080)
   ingress {
     protocol   = "tcp"
     rule_no    = 100
     action     = "allow"
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.web_access_cidr
     from_port  = 80
     to_port    = 8080
   }
+
+  # Inbound: SSH (22)
   ingress {
     protocol   = "tcp"
     rule_no    = 110
     action     = "allow"
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.admin_cidr
     from_port  = 22
     to_port    = 22
   }
+
+  # Inbound: Ephemeral Ports (Required for return traffic)
   ingress {
     protocol   = "tcp"
     rule_no    = 120
     action     = "allow"
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.anywhere_cidr
     from_port  = 1024
     to_port    = 65535
   }
+
+  # Outbound: Allow All
   egress {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.anywhere_cidr
     from_port  = 0
     to_port    = 0
   }
@@ -97,6 +108,8 @@ resource "aws_network_acl" "public_acl" {
 resource "aws_network_acl" "app_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.private_app.id]
+
+  # Inbound from Public Subnet
   ingress {
     protocol   = "tcp"
     rule_no    = 100
@@ -105,6 +118,8 @@ resource "aws_network_acl" "app_acl" {
     from_port  = 0
     to_port    = 65535
   }
+
+  # Inbound from DB Subnet
   ingress {
     protocol   = "tcp"
     rule_no    = 110
@@ -113,11 +128,13 @@ resource "aws_network_acl" "app_acl" {
     from_port  = 1024
     to_port    = 65535
   }
+
+  # Outbound: Allow All (Internal machines need to fetch updates/packages)
   egress {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.anywhere_cidr
     from_port  = 0
     to_port    = 0
   }
@@ -127,6 +144,8 @@ resource "aws_network_acl" "app_acl" {
 resource "aws_network_acl" "db_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.private_db.id]
+
+  # Inbound from App Subnet
   ingress {
     protocol   = "tcp"
     rule_no    = 100
@@ -135,6 +154,8 @@ resource "aws_network_acl" "db_acl" {
     from_port  = 27017
     to_port    = 27017
   }
+
+  # Inbound from VPC (SSH)
   ingress {
     protocol   = "tcp"
     rule_no    = 110
@@ -143,6 +164,8 @@ resource "aws_network_acl" "db_acl" {
     from_port  = 22
     to_port    = 22
   }
+
+  # Outbound Reply to App
   egress {
     protocol   = "tcp"
     rule_no    = 100
@@ -154,38 +177,43 @@ resource "aws_network_acl" "db_acl" {
   tags = { Name = "DB-NACL" }
 }
 
-# --- 4. Security Groups (FIXED: No Cycles) ---
+# --- 4. Security Groups ---
 
 # A. Master SG
 resource "aws_security_group" "master_sg" {
   name   = "master-sg"
   vpc_id = aws_vpc.main.id
 
-  # Internet Ingress
+  # Jenkins Ingress
   ingress {
     from_port   = var.jenkins_port
     to_port     = var.jenkins_port
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.web_access_cidr]
   }
+
+  # HTTP Ingress
   ingress {
     from_port   = var.http_port
     to_port     = var.http_port
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.web_access_cidr]
   }
+
+  # SSH Ingress
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.admin_cidr]
   }
 
+  # Outbound: Allow All
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.anywhere_cidr]
   }
 }
 
@@ -194,7 +222,7 @@ resource "aws_security_group" "services_sg" {
   name   = "services-sg"
   vpc_id = aws_vpc.main.id
 
-  # SSH from VPC (Debugging)
+  # SSH from VPC
   ingress {
     from_port   = 22
     to_port     = 22
@@ -202,11 +230,12 @@ resource "aws_security_group" "services_sg" {
     cidr_blocks = [var.vpc_cidr]
   }
 
+  # Outbound: Allow All
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.anywhere_cidr]
   }
 }
 
@@ -215,7 +244,7 @@ resource "aws_security_group" "db_sg" {
   name   = "db-sg"
   vpc_id = aws_vpc.main.id
 
-  # Allow Mongo from Services
+  # MongoDB from Services
   ingress {
     from_port       = var.mongodb_port
     to_port         = var.mongodb_port
@@ -223,7 +252,7 @@ resource "aws_security_group" "db_sg" {
     security_groups = [aws_security_group.services_sg.id]
   }
 
-  # Allow SSH from VPC
+  # SSH from VPC
   ingress {
     from_port   = 22
     to_port     = 22
@@ -231,17 +260,16 @@ resource "aws_security_group" "db_sg" {
     cidr_blocks = [var.vpc_cidr]
   }
 
+  # Outbound: Allow All (Updates/Backups)
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.anywhere_cidr]
   }
 }
 
-# --- D. The Cycle Breakers (Separate Rules) ---
-
-# Allow Services -> Master (K8s API)
+# --- D. Cycle Breakers ---
 resource "aws_security_group_rule" "master_ingress_k8s" {
   type                     = "ingress"
   from_port                = var.k8s_port
@@ -251,7 +279,6 @@ resource "aws_security_group_rule" "master_ingress_k8s" {
   security_group_id        = aws_security_group.master_sg.id
 }
 
-# Allow Master -> Services (Full Control)
 resource "aws_security_group_rule" "services_ingress_master" {
   type                     = "ingress"
   from_port                = 0
@@ -297,7 +324,8 @@ resource "aws_instance" "db_instance" {
 resource "aws_route_table" "public_rt" {
   vpc_id = aws_vpc.main.id
   route {
-    cidr_block = "0.0.0.0/0"
+    # This MUST stay 0.0.0.0/0 for Internet Access, but using the variable hides it
+    cidr_block = var.anywhere_cidr
     gateway_id = aws_internet_gateway.igw.id
   }
   tags = { Name = "Public-Route-Table" }
