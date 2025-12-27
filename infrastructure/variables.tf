@@ -1,0 +1,100 @@
+variable "aws_region" {
+  description = "The AWS region to deploy into"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "availability_zone" {
+  description = "The specific AZ to deploy into"
+  type        = string
+  default     = "us-east-1a"
+}
+
+variable "iam_instance_profile_name" {
+  description = "Name of the existing IAM Instance Profile (e.g. LabInstanceProfile)"
+  type        = string
+  default     = "LabInstanceProfile"
+}
+
+# --- Networking CIDRs ---
+variable "vpc_cidr" {
+  description = "CIDR for the whole VPC"
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
+variable "public_subnet_cidr" {
+  description = "CIDR for Master Node Subnet"
+  type        = string
+  default     = "10.0.1.0/24"
+}
+
+variable "private_subnet_app_cidr" {
+  description = "CIDR for Service Nodes Subnet (Privet net 1)"
+  type        = string
+  default     = "10.0.2.0/24"
+}
+
+variable "private_subnet_db_cidr" {
+  description = "CIDR for DB Node Subnet (Privet net 2)"
+  type        = string
+  default     = "10.0.3.0/24"
+}
+
+# --- Application Ports (Specific to your Stack) ---
+
+variable "http_port" {
+  description = "Port for HTTP traffic (Gateway)"
+  type        = number
+  default     = 80
+}
+
+variable "jenkins_port" {
+  description = "Port for Jenkins UI"
+  type        = number
+  default     = 8080
+}
+
+variable "k8s_port" {
+  description = "Port for Kubernetes API (K3s) - Communication Master <-> Services"
+  type        = number
+  default     = 6443
+}
+
+variable "service_app_port" {
+  description = "Port where your Node/Python apps run on the Service nodes"
+  type        = number
+  default     = 5000
+}
+
+variable "mongodb_port" {
+  description = "Port for MongoDB"
+  type        = number
+  default     = 27017
+}
+
+# --- Instance Configuration ---
+
+variable "master_instance_type" {
+  description = "Master node: t3.medium, ubuntu"
+  type        = string
+  default     = "t3.medium"
+}
+
+variable "app_instance_type" {
+  description = "Service nodes: t3.micro, ubuntu"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "db_instance_type" {
+  description = "DB node: t3.medium, ubuntu"
+  type        = string
+  default     = "t3.medium"
+}
+
+variable "app_instance_count" {
+  description = "Number of Service Nodes (1-6)"
+  type        = number
+  default     = 6
+}
