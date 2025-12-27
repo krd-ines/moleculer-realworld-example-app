@@ -17,17 +17,17 @@ spec:
         role: api-master
       containers:
       - name: moleculer-app
-        image: moleculer-conduit:local
-        imagePullPolicy: IfNotPresent
+        image: moleculer-registry:5000/moleculer-conduit:local
+        imagePullPolicy: Always
         env:
         - name: SERVICES
-          value: "api"            # Only starts the API service
+          value: "services/api.service.js"            # Only starts the API service
         - name: PORT
           value: "3000"
         - name: TRANSPORTER
           value: "nats://nats-service:4222"
         - name: MONGO_URI
-          value: "mongodb://mongodb-service:27017/conduit"
+          value: "mongodb://mongo-service:27017/conduit"
         ports:
         - containerPort: 3000
 ---

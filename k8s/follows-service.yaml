@@ -14,12 +14,12 @@ spec:
     spec:
       containers:
       - name: moleculer-app
-        image: moleculer-conduit:local
-        imagePullPolicy: IfNotPresent
+        image: moleculer-registry:5000/moleculer-conduit:local
+        imagePullPolicy: Always
         env:
         - name: SERVICES
-          value: "follows"          # Only starts the Users service
+          value: "services/follows.service.js"         # Only starts the Users service
         - name: TRANSPORTER
           value: "nats://nats-service:4222"
         - name: MONGO_URI
-          value: "mongodb://mongodb-service:27017/conduit"
+          value: "mongodb://mongo-service:27017/conduit"
