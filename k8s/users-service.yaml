@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: users-service
+spec:
+  replicas: 2 # You can scale this because you have 6 worker nodes!
+  selector:
+    matchLabels:
+      app: users-service
+  template:
+    metadata:
+      labels:
+        app: users-service
+    spec:
+      containers:
+      - name: moleculer-app
+        image: moleculer-conduit:local
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: SERVICES
+          value: "users"          # Only starts the Users service
+        - name: TRANSPORTER
+          value: "nats://nats-service:4222"
+        - name: MONGO_URI
+          value: "mongodb://mongodb-service:27017/conduit"

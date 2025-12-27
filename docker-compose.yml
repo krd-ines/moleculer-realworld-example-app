@@ -1,5 +1,3 @@
-version: "3.0"
-
 services:
 
   api:
@@ -109,7 +107,7 @@ services:
       - "4222:4222"
 
   mongo:
-    image: mongo
+    image: mongo:4.2
     volumes:
       - ./db:/data/db
 

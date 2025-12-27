@@ -1,0 +1,11 @@
+# "link" the Terraform outputs to the Kubernetes world
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: moleculer-env
+data:
+  # Replace these with the IPs from your Terraform outputs
+  TRANSPORTER: "nats://nats-service:4222"  # Using the Service Name!
+  MONGO_URI: "mongodb://mongo-service:27017/conduit"
+  NODE_ENV: "production"
+  NAMESPACE: "realworld"
