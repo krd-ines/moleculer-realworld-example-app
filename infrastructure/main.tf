@@ -59,53 +59,44 @@ resource "aws_subnet" "private_db" {
   tags = { Name = "Private-Subnet-DB" }
 }
 
-# --- 3. Network ACL (NACL) ---
-# Defines traffic rules at the subnet level
-resource "aws_network_acl" "main_acl" {
-  vpc_id     = aws_vpc.main.id
-  subnet_ids = [aws_subnet.public.id, aws_subnet.private_app.id, aws_subnet.private_db.id]
+# --- 3. Network ACLs (3-Layer Architecture) ---
 
-  # Allow Internal Traffic between Subnets (App <-> DB <-> Public)
+# A. Public Layer (Master Node)
+resource "aws_network_acl" "public_acl" {
+  vpc_id     = aws_vpc.main.id
+  subnet_ids = [aws_subnet.public.id]
+
+  # Inbound: HTTP (80) & Jenkins (8080) from Internet
   ingress {
     protocol   = "tcp"
     rule_no    = 100
     action     = "allow"
-    cidr_block = var.vpc_cidr
-    from_port  = 0
-    to_port    = 65535
+    cidr_block = "0.0.0.0/0"
+    from_port  = 80
+    to_port    = 8080
   }
 
-  # Allow HTTP from Internet (for Gateway/Jenkins)
+  # Inbound: SSH (22)
   ingress {
     protocol   = "tcp"
-    rule_no    = 130
+    rule_no    = 110
     action     = "allow"
     cidr_block = "0.0.0.0/0"
-    from_port  = var.http_port # 80
-    to_port    = var.http_port
+    from_port  = 22
+    to_port    = 22
   }
 
-  # Allow Jenkins UI from Internet
+  # Inbound: Ephemeral (Return traffic)
   ingress {
     protocol   = "tcp"
-    rule_no    = 135
-    action     = "allow"
-    cidr_block = "0.0.0.0/0"
-    from_port  = var.jenkins_port # 8080
-    to_port    = var.jenkins_port
-  }
-
-  # Allow Ephemeral ports (Return traffic)
-  ingress {
-    protocol   = "tcp"
-    rule_no    = 140
+    rule_no    = 120
     action     = "allow"
     cidr_block = "0.0.0.0/0"
     from_port  = 1024
     to_port    = 65535
   }
 
-  # Allow all outbound traffic
+  # Outbound: Allow All
   egress {
     protocol   = "-1"
     rule_no    = 100
@@ -115,7 +106,83 @@ resource "aws_network_acl" "main_acl" {
     to_port    = 0
   }
 
-  tags = { Name = "Main-NACL" }
+  tags = { Name = "Public-NACL" }
+}
+
+# B. App Layer (Services)
+resource "aws_network_acl" "app_acl" {
+  vpc_id     = aws_vpc.main.id
+  subnet_ids = [aws_subnet.private_app.id]
+
+  # Inbound: From Public Subnet (Master commands)
+  ingress {
+    protocol   = "tcp"
+    rule_no    = 100
+    action     = "allow"
+    cidr_block = var.public_subnet_cidr
+    from_port  = 0
+    to_port    = 65535
+  }
+
+  # Inbound: From DB Subnet (Return traffic from DB)
+  ingress {
+    protocol   = "tcp"
+    rule_no    = 110
+    action     = "allow"
+    cidr_block = var.private_subnet_db_cidr
+    from_port  = 1024
+    to_port    = 65535
+  }
+
+  # Outbound: Allow All
+  egress {
+    protocol   = "-1"
+    rule_no    = 100
+    action     = "allow"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 0
+    to_port    = 0
+  }
+
+  tags = { Name = "App-NACL" }
+}
+
+# C. DB Layer (Database)
+resource "aws_network_acl" "db_acl" {
+  vpc_id     = aws_vpc.main.id
+  subnet_ids = [aws_subnet.private_db.id]
+
+  # Inbound: From App Services (MongoDB 27017)
+  ingress {
+    protocol   = "tcp"
+    rule_no    = 100
+    action     = "allow"
+    cidr_block = var.private_subnet_app_cidr
+    from_port  = 27017
+    to_port    = 27017
+  }
+
+  # Inbound: SSH from within VPC
+  ingress {
+    protocol   = "tcp"
+    rule_no    = 110
+    action     = "allow"
+    cidr_block = var.vpc_cidr
+    from_port  = 22
+    to_port    = 22
+  }
+
+  # Outbound: Ephemeral (Reply to App Services)
+  egress {
+    protocol   = "tcp"
+    rule_no    = 100
+    action     = "allow"
+    cidr_block = var.private_subnet_app_cidr
+    from_port  = 1024
+    to_port    = 65535
+  }
+
+  tags = { Name = "DB-NACL" }
 }
 
 # --- 4. Security Groups ---
@@ -141,15 +208,7 @@ resource "aws_security_group" "master_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Inbound: K3s API (6443) from Service Nodes Only
-  ingress {
-    from_port       = var.k8s_port
-    to_port         = var.k8s_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.services_sg.id]
-  }
-
-  # Inbound: SSH (22) - Optional but needed for management
+  # Inbound: SSH (22)
   ingress {
     from_port   = 22
     to_port     = 22
@@ -157,6 +216,16 @@ resource "aws_security_group" "master_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # Inbound: K3s API (6443) from Service Nodes Only
+  # (Allows Service Nodes to register with the Master)
+  ingress {
+    from_port       = var.k8s_port
+    to_port         = var.k8s_port
+    protocol        = "tcp"
+    security_groups = [aws_security_group.services_sg.id]
+  }
+
+  # Outbound: Full Access
   egress {
     from_port   = 0
     to_port     = 0
@@ -165,38 +234,37 @@ resource "aws_security_group" "master_sg" {
   }
 }
 
-# B. Services SG (App Logic)
+# B. Services SG (CONSOLIDATED & FIXED)
+# Allows Master Node full access for Kubernetes management
 resource "aws_security_group" "services_sg" {
   name   = "services-sg"
   vpc_id = aws_vpc.main.id
-}
 
-# Rule: Allow Master to talk to Services (e.g. K8s commands)
-resource "aws_security_group_rule" "service_ingress_master" {
-  type                     = "ingress"
-  from_port                = var.service_app_port
-  to_port                  = var.service_app_port
-  protocol                 = "tcp"
-  source_security_group_id = aws_security_group.master_sg.id
-  security_group_id        = aws_security_group.services_sg.id
-}
+  # 1. Allow Master Node FULL access (Command & Control for K8s)
+  ingress {
+    description     = "Allow Master Node to manage Services"
+    from_port       = 0
+    to_port         = 65535
+    protocol        = "tcp"
+    security_groups = [aws_security_group.master_sg.id]
+  }
 
-resource "aws_security_group_rule" "service_ingress_ssh" {
-  type              = "ingress"
-  from_port         = 22
-  to_port           = 22
-  protocol          = "tcp"
-  cidr_blocks       = [var.vpc_cidr] # Only allow SSH from inside VPC (Jump host)
-  security_group_id = aws_security_group.services_sg.id
-}
+  # 2. Allow SSH from internal VPC
+  ingress {
+    description = "Allow SSH from internal VPC"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
 
-resource "aws_security_group_rule" "service_egress_all" {
-  type              = "egress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.services_sg.id
+  # 3. Allow Outbound (To DB and Internet)
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
 # C. DB SG (MongoDB)
@@ -236,7 +304,7 @@ resource "aws_instance" "master_node" {
   subnet_id            = aws_subnet.public.id
   iam_instance_profile = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.master_sg.id]
-  key_name             = "vockey" # Ensure this key exists in your AWS Console
+  key_name             = "vockey"
 
   tags = { Name = "Master-Node" }
 }
