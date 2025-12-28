@@ -19,7 +19,6 @@ spec:
           env:
             - name: SERVICES
               value: "services/follows.service.js"
-            - name: TRANSPORTER
-              value: "nats://nats-service:4222"
-            - name: MONGO_URI
-              value: "mongodb://REPLACE_WITH_DB_PRIVATE_IP:27017/conduit"
+          envFrom:
+            - configMapRef:
+                name: moleculer-env

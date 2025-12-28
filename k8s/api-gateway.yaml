@@ -12,6 +12,8 @@ spec:
       labels:
         app: api-gateway
     spec:
+      nodeSelector:
+        role: api-master
       containers:
         - name: moleculer-app
           image: YOUR_DOCKERHUB_USERNAME/moleculer-conduit:latest
@@ -21,10 +23,10 @@ spec:
               value: "services/api.service.js"
             - name: PORT
               value: "3000"
-            - name: TRANSPORTER
-              value: "nats://nats-service:4222"
-            - name: MONGO_URI
-              value: "mongodb://REPLACE_WITH_DB_PRIVATE_IP:27017/conduit"
+          # Import shared variables (Mongo, NATS) from ConfigMap
+          envFrom:
+            - configMapRef:
+                name: moleculer-env
           ports:
             - containerPort: 3000
 ---
