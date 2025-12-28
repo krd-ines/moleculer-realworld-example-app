@@ -60,42 +60,20 @@ resource "aws_network_acl" "public_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.public.id]
 
-  # Inbound: Web (80/8080)
-  ingress {
-    protocol   = "tcp"
-    rule_no    = 100
-    action     = "allow"
-    cidr_block = var.web_access_cidr
-    from_port  = 80
-    to_port    = 8080
-  }
-
-  # Inbound: SSH (22)
-  ingress {
-    protocol   = "tcp"
-    rule_no    = 110
-    action     = "allow"
-    cidr_block = var.admin_cidr
-    from_port  = 22
-    to_port    = 22
-  }
-
-  # Inbound: Ephemeral (Return Traffic) + Internal Traffic
+  # Allow all Inbound/Outbound for simplicity in Public Subnet
   ingress {
     protocol   = "-1"
-    rule_no    = 120
+    rule_no    = 100
     action     = "allow"
-    cidr_block = var.anywhere_cidr
+    cidr_block = "0.0.0.0/0"
     from_port  = 0
     to_port    = 0
   }
-
-  # Outbound: Allow All
   egress {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = var.anywhere_cidr
+    cidr_block = "0.0.0.0/0"
     from_port  = 0
     to_port    = 0
   }
@@ -106,22 +84,20 @@ resource "aws_network_acl" "app_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.private_app.id]
 
-  # Inbound from Public (Master) & DB
+  # Allow Internal VPC Traffic + Return Traffic
   ingress {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = var.vpc_cidr # Simplify: Trust entire VPC
+    cidr_block = "0.0.0.0/0" # Trusting broadly for Lab ease (Master NAT needs 0.0.0.0/0 return)
     from_port  = 0
     to_port    = 0
   }
-
-  # Outbound: Allow All (Needed for Internet/Updates)
   egress {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = var.anywhere_cidr
+    cidr_block = "0.0.0.0/0"
     from_port  = 0
     to_port    = 0
   }
@@ -132,7 +108,7 @@ resource "aws_network_acl" "db_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.private_db.id]
 
-  # --- FIX: Trust VPC (Allows Master to reply to download requests) ---
+  # Allow Inbound from VPC (Workers) and Reply Traffic
   ingress {
     protocol   = "-1"
     rule_no    = 100
@@ -141,13 +117,22 @@ resource "aws_network_acl" "db_acl" {
     from_port  = 0
     to_port    = 0
   }
+  # Allow Ephemeral ports from Internet (via NAT)
+  ingress {
+    protocol   = "tcp"
+    rule_no    = 110
+    action     = "allow"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 1024
+    to_port    = 65535
+  }
 
-  # --- FIX: Allow Outbound (Needed to ask Master for updates) ---
+  # Outbound to Anywhere (For Updates via Master NAT)
   egress {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = var.anywhere_cidr
+    cidr_block = "0.0.0.0/0"
     from_port  = 0
     to_port    = 0
   }
@@ -156,36 +141,31 @@ resource "aws_network_acl" "db_acl" {
 
 # --- 4. Security Groups ---
 
-# A. Master SG
 resource "aws_security_group" "master_sg" {
   name   = "master-sg"
   vpc_id = aws_vpc.main.id
 
-  # Jenkins Ingress
-  ingress {
-    from_port   = var.jenkins_port
-    to_port     = var.jenkins_port
-    protocol    = "tcp"
-    cidr_blocks = [var.web_access_cidr]
-  }
-
-  # HTTP Ingress
-  ingress {
-    from_port   = var.http_port
-    to_port     = var.http_port
-    protocol    = "tcp"
-    cidr_blocks = [var.web_access_cidr]
-  }
-
-  # SSH Ingress
+  # Admin Access (SSH, HTTP, Jenkins)
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = [var.admin_cidr]
   }
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = [var.web_access_cidr]
+  }
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = [var.web_access_cidr]
+  }
 
-  # Inbound from Private Subnets (For NAT)
+  # Allow K3s API and NAT Traffic from Internal VPC
   ingress {
     from_port   = 0
     to_port     = 0
@@ -198,16 +178,15 @@ resource "aws_security_group" "master_sg" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = [var.anywhere_cidr]
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
-# B. Services SG
 resource "aws_security_group" "services_sg" {
   name   = "services-sg"
   vpc_id = aws_vpc.main.id
 
-  # Allow all internal traffic from VPC (Simpler & Safer for Lab)
+  # Allow All Internal Traffic (Worker-to-Worker communication)
   ingress {
     from_port   = 0
     to_port     = 0
@@ -220,93 +199,134 @@ resource "aws_security_group" "services_sg" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = [var.anywhere_cidr]
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
-# C. DB SG
 resource "aws_security_group" "db_sg" {
   name   = "db-sg"
   vpc_id = aws_vpc.main.id
 
-  # Allow all internal traffic from VPC
+  # Allow MongoDB (27017) from VPC
   ingress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    from_port   = 27017
+    to_port     = 27017
+    protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr]
   }
 
-  # Outbound: Allow All (Updates/Backups)
+  # Allow SSH from VPC
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  # Outbound: Allow All (Updates)
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = [var.anywhere_cidr]
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
 # --- 5. Instances ---
+
+# MASTER NODE (The Router & K3s Server)
 resource "aws_instance" "master_node" {
-  ami                  = data.aws_ami.ubuntu.id
-  instance_type        = var.master_instance_type
-  subnet_id            = aws_subnet.public.id
-  iam_instance_profile = data.aws_iam_instance_profile.lab_profile.name
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = var.master_instance_type
+  subnet_id              = aws_subnet.public.id
+  iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.master_sg.id]
-  key_name             = "vockey"
+  key_name               = "vockey"
 
-  # --- FIX 1: Allow Traffic Passing (The Bridge) ---
+  # --- CRITICAL: Allow Traffic Passing ---
   source_dest_check      = false
-  # ------------------------------------------------
 
-  # --- FIX 2: Enable Router Logic & Install K3s ---
+  # --- CRITICAL: Configure NAT & Install K3s Master ---
   user_data = <<-EOF
               #!/bin/bash
-              # 1. Enable IP Forwarding
+              # 1. Enable IP Forwarding (Router Mode)
               sysctl -w net.ipv4.ip_forward=1
               echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 
-              # 2. Configure NAT (The Disguise)
+              # 2. Enable Masquerading (NAT)
               iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
               apt-get update && apt-get install -y iptables-persistent
 
-              # 3. Install K3s (Master Mode)
-              curl -sfL https://get.k3s.io | sh -
+              # 3. Install K3s Server with Hardcoded Token
+              curl -sfL https://get.k3s.io | K3S_TOKEN=mysecretpassword sh -
 
-              # 4. Wait & Extract Token
-              sleep 20
-              cat /var/lib/rancher/k3s/server/node-token > /tmp/k3s_token
+              # 4. Ready to serve
+              echo "Master Node Ready"
               EOF
 
   tags = { Name = "Master-Node" }
 }
 
+# WORKER NODES (The K3s Agents)
 resource "aws_instance" "app_services" {
-  count                = var.app_instance_count
-  ami                  = data.aws_ami.ubuntu.id
-  instance_type        = var.app_instance_type
-  subnet_id            = aws_subnet.private_app.id
-  iam_instance_profile = data.aws_iam_instance_profile.lab_profile.name
+  count                  = var.app_instance_count
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = var.app_instance_type
+  subnet_id              = aws_subnet.private_app.id
+  iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.services_sg.id]
-  key_name             = "vockey"
-  tags = { Name = "Service-${count.index + 1}" }
+  key_name               = "vockey"
+
+  depends_on = [aws_instance.master_node]
+
+  # --- CRITICAL: Join the Master automatically ---
+  user_data = <<-EOF
+              #!/bin/bash
+              # 1. Wait a moment for Master to be ready
+              sleep 60
+
+              # 2. Install K3s Agent pointing to Master IP
+              curl -sfL https://get.k3s.io | K3S_URL=https://${aws_instance.master_node.private_ip}:6443 K3S_TOKEN=mysecretpassword sh -
+              EOF
+
+  tags = { Name = "Service-Worker-${count.index + 1}" }
 }
 
+# DATABASE INSTANCE (MongoDB)
 resource "aws_instance" "db_instance" {
-  ami                  = data.aws_ami.ubuntu.id
-  instance_type        = var.db_instance_type
-  subnet_id            = aws_subnet.private_db.id
-  iam_instance_profile = data.aws_iam_instance_profile.lab_profile.name
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = var.db_instance_type
+  subnet_id              = aws_subnet.private_db.id
+  iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.db_sg.id]
-  key_name             = "vockey"
+  key_name               = "vockey"
+
+  depends_on = [aws_instance.master_node]
+
+  # --- CRITICAL: Install Mongo & Allow Remote Access ---
+  user_data = <<-EOF
+              #!/bin/bash
+              # 1. Update and Install MongoDB (Uses NAT to reach internet)
+              apt-get update
+              apt-get install -y mongodb
+
+              # 2. Configure Mongo to listen to 0.0.0.0 (All IPs)
+              # Default is 127.0.0.1, we change it so workers can connect
+              sed -i 's/bind_ip = 127.0.0.1/bind_ip = 0.0.0.0/' /etc/mongodb.conf
+
+              # 3. Restart Service
+              systemctl restart mongodb
+              EOF
+
   tags = { Name = "DB-Instance" }
 }
 
 # --- 6. Route Tables ---
+
 resource "aws_route_table" "public_rt" {
   vpc_id = aws_vpc.main.id
   route {
-    cidr_block = var.anywhere_cidr
+    cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.igw.id
   }
   tags = { Name = "Public-Route-Table" }
@@ -317,15 +337,15 @@ resource "aws_route_table_association" "public_assoc" {
   route_table_id = aws_route_table.public_rt.id
 }
 
+# PRIVATE ROUTE TABLE (The "Signpost" to the Master)
 resource "aws_route_table" "private_rt" {
   vpc_id = aws_vpc.main.id
 
-  # --- FIX 3: Route 0.0.0.0/0 to Master (The Signpost) ---
+  # --- CRITICAL: Route Internet Traffic to Master Node ---
   route {
     cidr_block           = "0.0.0.0/0"
     instance_id          = aws_instance.master_node.id
   }
-  # -------------------------------------------------------
 
   tags = { Name = "Private-Route-Table" }
 }
@@ -339,3 +359,4 @@ resource "aws_route_table_association" "private_db_assoc" {
   subnet_id      = aws_subnet.private_db.id
   route_table_id = aws_route_table.private_rt.id
 }
+
