@@ -234,7 +234,7 @@ resource "aws_security_group" "db_sg" {
 
 # --- 5. Instances ---
 
-# MASTER NODE (The Router & K3s Server)
+# MASTER NODE (The Router, K3s Server & Jenkins Server)
 resource "aws_instance" "master_node" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.master_instance_type
@@ -246,7 +246,7 @@ resource "aws_instance" "master_node" {
   # --- CRITICAL: Allow Traffic Passing ---
   source_dest_check      = false
 
-  # --- CRITICAL: Configure NAT & Install K3s Master ---
+  # --- CRITICAL: Configure NAT, Install K3s & Install Jenkins ---
   user_data = <<-EOF
               #!/bin/bash
               # 1. Enable IP Forwarding (Router Mode)
@@ -257,10 +257,47 @@ resource "aws_instance" "master_node" {
               iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
               apt-get update && apt-get install -y iptables-persistent
 
-              # 3. Install K3s Server with Hardcoded Token
+              # 3. Install K3s Server
               curl -sfL https://get.k3s.io | K3S_TOKEN=mysecretpassword sh -
 
-              # 4. Ready to serve
+              # --- JENKINS INSTALLATION START ---
+
+              # 4. Install Java (Required for Jenkins)
+              apt-get install -y openjdk-17-jre
+
+              # 5. Install Jenkins
+              curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | tee \
+                /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+              echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
+                https://pkg.jenkins.io/debian-stable binary/ | tee \
+                /etc/apt/sources.list.d/jenkins.list > /dev/null
+              apt-get update
+              apt-get install -y jenkins
+
+              # 6. Start Jenkins
+              systemctl start jenkins
+              systemctl enable jenkins
+
+              # 7. Add Jenkins to Docker Group (So it can build images)
+              # Note: K3s installs 'containerd', but for building images we might need standard docker or buildkit.
+              # For simplicity in this lab, we will install standard docker for Jenkins to use.
+              apt-get install -y docker.io
+              usermod -aG docker jenkins
+              chmod 666 /var/run/docker.sock
+
+              # 8. Configure Kubeconfig for Jenkins (So it can deploy)
+              # Wait for K3s to finish initializing
+              sleep 30
+              mkdir -p /var/lib/jenkins/.kube
+              cp /etc/rancher/k3s/k3s.yaml /var/lib/jenkins/.kube/config
+              chown jenkins:jenkins /var/lib/jenkins/.kube/config
+              chmod 600 /var/lib/jenkins/.kube/config
+
+              # 9. Restart Jenkins to apply group changes
+              systemctl restart jenkins
+
+              # --- JENKINS INSTALLATION END ---
+
               echo "Master Node Ready"
               EOF
 
