@@ -60,12 +60,12 @@ resource "aws_network_acl" "public_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.public.id]
 
-  # Allow all Inbound/Outbound for simplicity in Public Subnet
+  # Allow all Inbound/Outbound (Using Variable)
   ingress {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.anywhere_cidr  # <--- FIXED
     from_port  = 0
     to_port    = 0
   }
@@ -73,7 +73,7 @@ resource "aws_network_acl" "public_acl" {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.anywhere_cidr  # <--- FIXED
     from_port  = 0
     to_port    = 0
   }
@@ -89,7 +89,7 @@ resource "aws_network_acl" "app_acl" {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = "0.0.0.0/0" # Trusting broadly for Lab ease (Master NAT needs 0.0.0.0/0 return)
+    cidr_block = var.anywhere_cidr  # Trusting broadly for Lab ease
     from_port  = 0
     to_port    = 0
   }
@@ -97,7 +97,7 @@ resource "aws_network_acl" "app_acl" {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.anywhere_cidr
     from_port  = 0
     to_port    = 0
   }
@@ -108,7 +108,7 @@ resource "aws_network_acl" "db_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.private_db.id]
 
-  # Allow Inbound from VPC (Workers) and Reply Traffic
+  # Allow Inbound from VPC (Workers)
   ingress {
     protocol   = "-1"
     rule_no    = 100
@@ -122,7 +122,7 @@ resource "aws_network_acl" "db_acl" {
     protocol   = "tcp"
     rule_no    = 110
     action     = "allow"
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.anywhere_cidr  # <--- FIXED
     from_port  = 1024
     to_port    = 65535
   }
@@ -132,7 +132,7 @@ resource "aws_network_acl" "db_acl" {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.anywhere_cidr  # <--- FIXED
     from_port  = 0
     to_port    = 0
   }
@@ -153,14 +153,14 @@ resource "aws_security_group" "master_sg" {
     cidr_blocks = [var.admin_cidr]
   }
   ingress {
-    from_port   = 80
-    to_port     = 80
+    from_port   = var.http_port     # <--- FIXED
+    to_port     = var.http_port     # <--- FIXED
     protocol    = "tcp"
     cidr_blocks = [var.web_access_cidr]
   }
   ingress {
-    from_port   = 8080
-    to_port     = 8080
+    from_port   = var.jenkins_port  # <--- FIXED
+    to_port     = var.jenkins_port  # <--- FIXED
     protocol    = "tcp"
     cidr_blocks = [var.web_access_cidr]
   }
@@ -178,7 +178,7 @@ resource "aws_security_group" "master_sg" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.anywhere_cidr] # <--- FIXED
   }
 }
 
@@ -199,7 +199,7 @@ resource "aws_security_group" "services_sg" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.anywhere_cidr] # <--- FIXED
   }
 }
 
@@ -207,10 +207,10 @@ resource "aws_security_group" "db_sg" {
   name   = "db-sg"
   vpc_id = aws_vpc.main.id
 
-  # Allow MongoDB (27017) from VPC
+  # Allow MongoDB from VPC
   ingress {
-    from_port   = 27017
-    to_port     = 27017
+    from_port   = var.mongodb_port  # <--- FIXED
+    to_port     = var.mongodb_port  # <--- FIXED
     protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr]
   }
@@ -228,13 +228,13 @@ resource "aws_security_group" "db_sg" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.anywhere_cidr] # <--- FIXED
   }
 }
 
 # --- 5. Instances ---
 
-# MASTER NODE (The Router, K3s Server & Jenkins Server)
+# MASTER NODE
 resource "aws_instance" "master_node" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.master_instance_type
@@ -242,30 +242,20 @@ resource "aws_instance" "master_node" {
   iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.master_sg.id]
   key_name               = "vockey"
-
-  # --- CRITICAL: Allow Traffic Passing ---
   source_dest_check      = false
 
-  # --- CRITICAL: Configure NAT, Install K3s & Install Jenkins ---
   user_data = <<-EOF
               #!/bin/bash
-              # 1. Enable IP Forwarding (Router Mode)
               sysctl -w net.ipv4.ip_forward=1
               echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-
-              # 2. Enable Masquerading (NAT)
               iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
               apt-get update && apt-get install -y iptables-persistent
 
-              # 3. Install K3s Server
+              # Install K3s Server
               curl -sfL https://get.k3s.io | K3S_TOKEN=mysecretpassword sh -
 
-              # --- JENKINS INSTALLATION START ---
-
-              # 4. Install Java (Required for Jenkins)
+              # Install Jenkins dependencies
               apt-get install -y openjdk-17-jre
-
-              # 5. Install Jenkins
               curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | tee \
                 /usr/share/keyrings/jenkins-keyring.asc > /dev/null
               echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
@@ -273,38 +263,29 @@ resource "aws_instance" "master_node" {
                 /etc/apt/sources.list.d/jenkins.list > /dev/null
               apt-get update
               apt-get install -y jenkins
-
-              # 6. Start Jenkins
               systemctl start jenkins
               systemctl enable jenkins
 
-              # 7. Add Jenkins to Docker Group (So it can build images)
-              # Note: K3s installs 'containerd', but for building images we might need standard docker or buildkit.
-              # For simplicity in this lab, we will install standard docker for Jenkins to use.
+              # Install Docker for Jenkins
               apt-get install -y docker.io
               usermod -aG docker jenkins
               chmod 666 /var/run/docker.sock
 
-              # 8. Configure Kubeconfig for Jenkins (So it can deploy)
-              # Wait for K3s to finish initializing
+              # Configure Kubeconfig for Jenkins
               sleep 30
               mkdir -p /var/lib/jenkins/.kube
               cp /etc/rancher/k3s/k3s.yaml /var/lib/jenkins/.kube/config
               chown jenkins:jenkins /var/lib/jenkins/.kube/config
               chmod 600 /var/lib/jenkins/.kube/config
 
-              # 9. Restart Jenkins to apply group changes
               systemctl restart jenkins
-
-              # --- JENKINS INSTALLATION END ---
-
               echo "Master Node Ready"
               EOF
 
   tags = { Name = "Master-Node" }
 }
 
-# WORKER NODES (The K3s Agents)
+# WORKER NODES
 resource "aws_instance" "app_services" {
   count                  = var.app_instance_count
   ami                    = data.aws_ami.ubuntu.id
@@ -316,20 +297,18 @@ resource "aws_instance" "app_services" {
 
   depends_on = [aws_instance.master_node]
 
-  # --- CRITICAL: Join the Master automatically ---
+  # --- CRITICAL: Using Variable for Port ---
   user_data = <<-EOF
               #!/bin/bash
-              # 1. Wait a moment for Master to be ready
               sleep 60
-
-              # 2. Install K3s Agent pointing to Master IP
-              curl -sfL https://get.k3s.io | K3S_URL=https://${aws_instance.master_node.private_ip}:6443 K3S_TOKEN=mysecretpassword sh -
+              # Using the k8s_port variable here:
+              curl -sfL https://get.k3s.io | K3S_URL=https://${aws_instance.master_node.private_ip}:${var.k8s_port} K3S_TOKEN=mysecretpassword sh -
               EOF
 
   tags = { Name = "Service-Worker-${count.index + 1}" }
 }
 
-# DATABASE INSTANCE (MongoDB)
+# DATABASE INSTANCE
 resource "aws_instance" "db_instance" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.db_instance_type
@@ -340,18 +319,11 @@ resource "aws_instance" "db_instance" {
 
   depends_on = [aws_instance.master_node]
 
-  # --- CRITICAL: Install Mongo & Allow Remote Access ---
   user_data = <<-EOF
               #!/bin/bash
-              # 1. Update and Install MongoDB (Uses NAT to reach internet)
               apt-get update
               apt-get install -y mongodb
-
-              # 2. Configure Mongo to listen to 0.0.0.0 (All IPs)
-              # Default is 127.0.0.1, we change it so workers can connect
               sed -i 's/bind_ip = 127.0.0.1/bind_ip = 0.0.0.0/' /etc/mongodb.conf
-
-              # 3. Restart Service
               systemctl restart mongodb
               EOF
 
@@ -359,11 +331,10 @@ resource "aws_instance" "db_instance" {
 }
 
 # --- 6. Route Tables ---
-
 resource "aws_route_table" "public_rt" {
   vpc_id = aws_vpc.main.id
   route {
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.anywhere_cidr # <--- FIXED
     gateway_id = aws_internet_gateway.igw.id
   }
   tags = { Name = "Public-Route-Table" }
@@ -374,16 +345,12 @@ resource "aws_route_table_association" "public_assoc" {
   route_table_id = aws_route_table.public_rt.id
 }
 
-# PRIVATE ROUTE TABLE (The "Signpost" to the Master)
 resource "aws_route_table" "private_rt" {
   vpc_id = aws_vpc.main.id
-
-  # --- CRITICAL: Route Internet Traffic to Master Node ---
   route {
-    cidr_block           = "0.0.0.0/0"
+    cidr_block           = var.anywhere_cidr # <--- FIXED
     instance_id          = aws_instance.master_node.id
   }
-
   tags = { Name = "Private-Route-Table" }
 }
 
@@ -396,4 +363,3 @@ resource "aws_route_table_association" "private_db_assoc" {
   subnet_id      = aws_subnet.private_db.id
   route_table_id = aws_route_table.private_rt.id
 }
-

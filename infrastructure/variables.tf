@@ -61,11 +61,6 @@ variable "k8s_port" {
   default     = 6443
 }
 
-variable "service_app_port" {
-  description = "Port where your Node/Python apps run on the Service nodes"
-  type        = number
-  default     = 5000
-}
 
 variable "mongodb_port" {
   description = "Port for MongoDB"
@@ -82,9 +77,9 @@ variable "master_instance_type" {
 }
 
 variable "app_instance_type" {
-  description = "Service nodes: t3.micro, ubuntu"
+  description = "Service nodes: t3.small, ubuntu"
   type        = string
-  default     = "t3.micro"
+  default     = "t3.small"
 }
 
 variable "db_instance_type" {
@@ -96,7 +91,7 @@ variable "db_instance_type" {
 variable "app_instance_count" {
   description = "Number of Service Nodes (1-6)"
   type        = number
-  default     = 6
+  default     = 3
 }
 # --- Security / Access Control ---
 
