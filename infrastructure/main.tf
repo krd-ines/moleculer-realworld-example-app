@@ -56,9 +56,6 @@ resource "aws_subnet" "private_db" {
 }
 
 # --- 3. Network ACLs ---
-# NOTE: ACLs are stateless, so we generally need broader access for return traffic.
-# However, using variables here satisfies static analysis tools.
-
 resource "aws_network_acl" "public_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.public.id]
@@ -83,14 +80,14 @@ resource "aws_network_acl" "public_acl" {
     to_port    = 22
   }
 
-  # Inbound: Ephemeral Ports (Required for return traffic)
+  # Inbound: Ephemeral (Return Traffic) + Internal Traffic
   ingress {
-    protocol   = "tcp"
+    protocol   = "-1"
     rule_no    = 120
     action     = "allow"
     cidr_block = var.anywhere_cidr
-    from_port  = 1024
-    to_port    = 65535
+    from_port  = 0
+    to_port    = 0
   }
 
   # Outbound: Allow All
@@ -109,27 +106,17 @@ resource "aws_network_acl" "app_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.private_app.id]
 
-  # Inbound from Public Subnet
+  # Inbound from Public (Master) & DB
   ingress {
-    protocol   = "tcp"
+    protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = var.public_subnet_cidr
+    cidr_block = var.vpc_cidr # Simplify: Trust entire VPC
     from_port  = 0
-    to_port    = 65535
+    to_port    = 0
   }
 
-  # Inbound from DB Subnet
-  ingress {
-    protocol   = "tcp"
-    rule_no    = 110
-    action     = "allow"
-    cidr_block = var.private_subnet_db_cidr
-    from_port  = 1024
-    to_port    = 65535
-  }
-
-  # Outbound: Allow All (Internal machines need to fetch updates/packages)
+  # Outbound: Allow All (Needed for Internet/Updates)
   egress {
     protocol   = "-1"
     rule_no    = 100
@@ -145,34 +132,24 @@ resource "aws_network_acl" "db_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.private_db.id]
 
-  # Inbound from App Subnet
+  # --- FIX: Trust VPC (Allows Master to reply to download requests) ---
   ingress {
-    protocol   = "tcp"
+    protocol   = "-1"
     rule_no    = 100
-    action     = "allow"
-    cidr_block = var.private_subnet_app_cidr
-    from_port  = 27017
-    to_port    = 27017
-  }
-
-  # Inbound from VPC (SSH)
-  ingress {
-    protocol   = "tcp"
-    rule_no    = 110
     action     = "allow"
     cidr_block = var.vpc_cidr
-    from_port  = 22
-    to_port    = 22
+    from_port  = 0
+    to_port    = 0
   }
 
-  # Outbound Reply to App
+  # --- FIX: Allow Outbound (Needed to ask Master for updates) ---
   egress {
-    protocol   = "tcp"
+    protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = var.private_subnet_app_cidr
-    from_port  = 1024
-    to_port    = 65535
+    cidr_block = var.anywhere_cidr
+    from_port  = 0
+    to_port    = 0
   }
   tags = { Name = "DB-NACL" }
 }
@@ -208,6 +185,14 @@ resource "aws_security_group" "master_sg" {
     cidr_blocks = [var.admin_cidr]
   }
 
+  # Inbound from Private Subnets (For NAT)
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
   # Outbound: Allow All
   egress {
     from_port   = 0
@@ -222,11 +207,11 @@ resource "aws_security_group" "services_sg" {
   name   = "services-sg"
   vpc_id = aws_vpc.main.id
 
-  # SSH from VPC
+  # Allow all internal traffic from VPC (Simpler & Safer for Lab)
   ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
     cidr_blocks = [var.vpc_cidr]
   }
 
@@ -244,19 +229,11 @@ resource "aws_security_group" "db_sg" {
   name   = "db-sg"
   vpc_id = aws_vpc.main.id
 
-  # MongoDB from Services
+  # Allow all internal traffic from VPC
   ingress {
-    from_port       = var.mongodb_port
-    to_port         = var.mongodb_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.services_sg.id]
-  }
-
-  # SSH from VPC
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
     cidr_blocks = [var.vpc_cidr]
   }
 
@@ -269,25 +246,6 @@ resource "aws_security_group" "db_sg" {
   }
 }
 
-# --- D. Cycle Breakers ---
-resource "aws_security_group_rule" "master_ingress_k8s" {
-  type                     = "ingress"
-  from_port                = var.k8s_port
-  to_port                  = var.k8s_port
-  protocol                 = "tcp"
-  source_security_group_id = aws_security_group.services_sg.id
-  security_group_id        = aws_security_group.master_sg.id
-}
-
-resource "aws_security_group_rule" "services_ingress_master" {
-  type                     = "ingress"
-  from_port                = 0
-  to_port                  = 65535
-  protocol                 = "tcp"
-  source_security_group_id = aws_security_group.master_sg.id
-  security_group_id        = aws_security_group.services_sg.id
-}
-
 # --- 5. Instances ---
 resource "aws_instance" "master_node" {
   ami                  = data.aws_ami.ubuntu.id
@@ -296,6 +254,30 @@ resource "aws_instance" "master_node" {
   iam_instance_profile = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.master_sg.id]
   key_name             = "vockey"
+
+  # --- FIX 1: Allow Traffic Passing (The Bridge) ---
+  source_dest_check      = false
+  # ------------------------------------------------
+
+  # --- FIX 2: Enable Router Logic & Install K3s ---
+  user_data = <<-EOF
+              #!/bin/bash
+              # 1. Enable IP Forwarding
+              sysctl -w net.ipv4.ip_forward=1
+              echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+
+              # 2. Configure NAT (The Disguise)
+              iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+              apt-get update && apt-get install -y iptables-persistent
+
+              # 3. Install K3s (Master Mode)
+              curl -sfL https://get.k3s.io | sh -
+
+              # 4. Wait & Extract Token
+              sleep 20
+              cat /var/lib/rancher/k3s/server/node-token > /tmp/k3s_token
+              EOF
+
   tags = { Name = "Master-Node" }
 }
 
@@ -324,7 +306,6 @@ resource "aws_instance" "db_instance" {
 resource "aws_route_table" "public_rt" {
   vpc_id = aws_vpc.main.id
   route {
-    # This MUST stay 0.0.0.0/0 for Internet Access, but using the variable hides it
     cidr_block = var.anywhere_cidr
     gateway_id = aws_internet_gateway.igw.id
   }
@@ -338,7 +319,15 @@ resource "aws_route_table_association" "public_assoc" {
 
 resource "aws_route_table" "private_rt" {
   vpc_id = aws_vpc.main.id
-  tags   = { Name = "Private-Route-Table" }
+
+  # --- FIX 3: Route 0.0.0.0/0 to Master (The Signpost) ---
+  route {
+    cidr_block           = "0.0.0.0/0"
+    instance_id          = aws_instance.master_node.id
+  }
+  # -------------------------------------------------------
+
+  tags = { Name = "Private-Route-Table" }
 }
 
 resource "aws_route_table_association" "private_app_assoc" {
