@@ -1,11 +1,13 @@
-# "link" the Terraform outputs to the Kubernetes world
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: moleculer-env
 data:
-  # Replace these with the IPs from your Terraform outputs
-  TRANSPORTER: "nats://nats-service:4222"  # Using the Service Name!
-  MONGO_URI: "mongodb://mongo-service:27017/conduit"
+  # KEEP: NATS is inside Kubernetes, so we use the internal DNS name
+  TRANSPORTER: "nats://nats-service:4222"
+
+  # CHANGE: Point to the AWS DB Instance IP
+  MONGO_URI: "mongodb://REPLACE_WITH_DB_PRIVATE_IP:27017/conduit"
+
   NODE_ENV: "production"
   NAMESPACE: "realworld"
