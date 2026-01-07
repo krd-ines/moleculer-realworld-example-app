@@ -108,7 +108,7 @@ resource "aws_network_acl" "db_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.private_db.id]
 
-  # Allow Inbound from VPC (Workers)
+  # 1. Allow ALL Inbound from VPC (This covers the Master and Workers)
   ingress {
     protocol   = "-1"
     rule_no    = 100
@@ -117,25 +117,17 @@ resource "aws_network_acl" "db_acl" {
     from_port  = 0
     to_port    = 0
   }
-  # Allow Ephemeral ports from Internet (via NAT)
-  ingress {
-    protocol   = "tcp"
-    rule_no    = 110
-    action     = "allow"
-    cidr_block = var.anywhere_cidr  # <--- FIXED
-    from_port  = 1024
-    to_port    = 65535
-  }
 
-  # Outbound to Anywhere (For Updates via Master NAT)
+  # 2. Allow ALL Outbound (This ensures the answer gets back to the requester)
   egress {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = var.anywhere_cidr  # <--- FIXED
+    cidr_block = "0.0.0.0/0"
     from_port  = 0
     to_port    = 0
   }
+
   tags = { Name = "DB-NACL" }
 }
 
@@ -258,18 +250,20 @@ exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 export DEBIAN_FRONTEND=noninteractive
 
 echo "--- [STEP 1] INSTALL TOOLS ---"
-# Wait for apt lock
 while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done
 apt-get update
-apt-get install -y iptables-persistent openjdk-17-jre docker.io unzip wget
+apt-get install -y iptables-persistent openjdk-17-jre docker.io unzip wget net-tools
 
 echo "--- [STEP 2] NETWORK CONFIGURATION ---"
-# Enable IP Forwarding
 sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 
-# Enable Masquerading (Critical for Pod Internet Access)
+# Clean start and MASQUERADE (Do not remove)
+iptables -F
+iptables -t nat -F
 iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+iptables -A INPUT -p tcp --dport 32448 -j ACCEPT
+
 echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
 echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | debconf-set-selections
 netfilter-persistent save
@@ -284,12 +278,11 @@ apt-get update
 apt-get install -y jenkins
 systemctl stop jenkins
 
-echo "--- [STEP 5] INSTALL KUBECTL (Required for your Jenkinsfile) ---"
+echo "--- [STEP 5] INSTALL KUBECTL ---"
 curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
 install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
 echo "--- [STEP 6] CONFIGURE KUBECONFIG FOR JENKINS ---"
-# Your Jenkinsfile specifically asks for /var/lib/jenkins/.kube/config
 while [ ! -f /etc/rancher/k3s/k3s.yaml ]; do sleep 2; done
 mkdir -p /var/lib/jenkins/.kube
 cp /etc/rancher/k3s/k3s.yaml /var/lib/jenkins/.kube/config
@@ -303,7 +296,7 @@ java -jar jenkins-plugin-manager-2.12.13.jar \
   --plugin-download-directory /var/lib/jenkins/plugins \
   --plugins git workflow-aggregator docker-workflow
 
-echo "--- [STEP 8] CONFIGURE JOB TO USE YOUR GIT REPO ---"
+echo "--- [STEP 8] CONFIGURE JOB (FIX: ADDED QUIET PERIOD) ---"
 mkdir -p /var/lib/jenkins/jobs/My-Pipeline-App
 cat <<XML > /var/lib/jenkins/jobs/My-Pipeline-App/config.xml
 <?xml version='1.1' encoding='UTF-8'?>
@@ -312,6 +305,7 @@ cat <<XML > /var/lib/jenkins/jobs/My-Pipeline-App/config.xml
   <description>Job using Jenkinsfile from Git</description>
   <keepDependencies>false</keepDependencies>
   <properties/>
+  <quietPeriod>30</quietPeriod>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
     <scm class="hudson.plugins.git.GitSCM" plugin="git">
       <configVersion>2</configVersion>
@@ -325,8 +319,6 @@ cat <<XML > /var/lib/jenkins/jobs/My-Pipeline-App/config.xml
           <name>*/aws-migration</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
-      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
-      <submoduleCfg class="list"/>
       <extensions/>
     </scm>
     <scriptPath>Jenkinsfile</scriptPath>
@@ -337,10 +329,15 @@ cat <<XML > /var/lib/jenkins/jobs/My-Pipeline-App/config.xml
 </flow-definition>
 XML
 
-echo "--- [STEP 9] CREATE CREDENTIALS ---"
+echo "--- [STEP 9] CREATE CREDENTIALS & LIMIT EXECUTORS ---"
 mkdir -p /var/lib/jenkins/init.groovy.d
 
-# 1. Admin User
+cat <<GROOVY > /var/lib/jenkins/init.groovy.d/limit-executors.groovy
+import jenkins.model.*
+Jenkins.instance.setNumExecutors(1)
+Jenkins.instance.save()
+GROOVY
+
 cat <<GROOVY > /var/lib/jenkins/init.groovy.d/basic-security.groovy
 import jenkins.model.*
 import hudson.security.*
@@ -354,7 +351,6 @@ instance.setAuthorizationStrategy(strategy)
 instance.save()
 GROOVY
 
-# 2. Docker Hub Credentials (docker-hub-creds)
 cat <<GROOVY > /var/lib/jenkins/init.groovy.d/docker-creds.groovy
 import com.cloudbees.plugins.credentials.*
 import com.cloudbees.plugins.credentials.domains.*
@@ -379,16 +375,20 @@ usermod -aG docker jenkins
 chown -R jenkins:jenkins /var/lib/jenkins
 chmod 666 /var/run/docker.sock
 
-# Disable Setup Wizard
 mkdir -p /etc/systemd/system/jenkins.service.d/
 cat <<CONF > /etc/systemd/system/jenkins.service.d/override.conf
 [Service]
 Environment="JAVA_OPTS=-Djenkins.install.runSetupWizard=false"
 CONF
 systemctl daemon-reload
-
 systemctl start jenkins
-echo "Master Node Ready"
+
+echo "--- [STEP 11] DOCKER DNS FIX ---"
+# This ensures docker build can resolve registry.npmjs.org
+mkdir -p /etc/docker
+echo '{"dns": ["8.8.8.8", "1.1.1.1"]}' > /etc/docker/daemon.json
+systemctl restart docker
+
 mkdir -p /home/ubuntu/.kube
 sudo cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
 sudo chown -R ubuntu:ubuntu /home/ubuntu/.kube
@@ -428,6 +428,7 @@ resource "aws_instance" "db_instance" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.db_instance_type
   subnet_id              = aws_subnet.private_db.id
+  private_ip             = "10.0.3.100"
   iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.db_sg.id]
   key_name               = "vockey"
@@ -436,10 +437,26 @@ resource "aws_instance" "db_instance" {
 
   user_data = <<-EOF
               #!/bin/bash
+              # 1. Wait for system and network to be fully ready
+              sleep 30
               apt-get update
               apt-get install -y mongodb
-              sed -i 's/bind_ip = 127.0.0.1/bind_ip = 0.0.0.0/' /etc/mongodb.conf
-              systemctl restart mongodb
+
+              # 2. Identify and Update the configuration file
+              # We use a broad sed to ensure we catch any variation of 127.0.0.1
+              if [ -f /etc/mongodb.conf ]; then
+                  sed -i 's/127.0.0.1/0.0.0.0/g' /etc/mongodb.conf
+              fi
+
+              if [ -f /etc/mongod.conf ]; then
+                  sed -i 's/127.0.0.1/0.0.0.0/g' /etc/mongod.conf
+              fi
+
+              # 3. Force stop, enable, and start
+              # Sometimes the service name varies between mongodb and mongod
+              systemctl stop mongodb || systemctl stop mongod
+              systemctl enable mongodb || systemctl enable mongod
+              systemctl start mongodb || systemctl start mongod
               EOF
 
   tags = { Name = "DB-Instance" }

@@ -7,7 +7,7 @@ data:
   TRANSPORTER: "nats://nats-service:4222"
 
   # CHANGE: Point to the AWS DB Instance IP
-  MONGO_URI: "mongodb://10.0.3.238:27017/conduit"
+  MONGO_URI: "mongodb://10.0.3.100:27017/conduit"
 
   NODE_ENV: "production"
   NAMESPACE: "realworld"
