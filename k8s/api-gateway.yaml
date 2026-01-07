@@ -12,8 +12,6 @@ spec:
       labels:
         app: api-gateway
     spec:
-      nodeSelector:
-        role: api-master
       containers:
         - name: moleculer-app
           image: mariaboukhelfa2025/moleculer-conduit:latest
@@ -41,3 +39,4 @@ spec:
   ports:
     - port: 3000
       targetPort: 3000
+      nodePort: 32448

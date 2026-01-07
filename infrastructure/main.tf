@@ -173,6 +173,14 @@ resource "aws_security_group" "master_sg" {
     cidr_blocks = [var.vpc_cidr]
   }
 
+  ingress {
+    description = "K8s NodePorts"
+    from_port   = 30000
+    to_port     = 32767
+    protocol    = "tcp"
+    cidr_blocks = [var.web_access_cidr]
+  }
+
   # Outbound: Allow All
   egress {
     from_port   = 0
@@ -381,6 +389,10 @@ systemctl daemon-reload
 
 systemctl start jenkins
 echo "Master Node Ready"
+mkdir -p /home/ubuntu/.kube
+sudo cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
+sudo chown -R ubuntu:ubuntu /home/ubuntu/.kube
+chmod 600 /home/ubuntu/.kube/config
 EOF
 
   tags = { Name = "Master-Node" }
