@@ -402,6 +402,7 @@ EOF
   tags = { Name = "Master-Node" }
 }
 
+
 # WORKER NODES
 resource "aws_instance" "app_services" {
   count                  = var.app_instance_count
