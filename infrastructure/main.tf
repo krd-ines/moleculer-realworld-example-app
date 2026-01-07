@@ -238,6 +238,7 @@ resource "aws_instance" "master_node" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.master_instance_type
   subnet_id              = aws_subnet.public.id
+  private_ip             = "10.0.1.10"
   iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.master_sg.id]
   key_name               = "vockey"
@@ -258,10 +259,13 @@ echo "--- [STEP 2] NETWORK CONFIGURATION ---"
 sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 
-# Clean start and MASQUERADE (Do not remove)
+# Clean start only for standard tables - then INSERT at position 1
 iptables -F
 iptables -t nat -F
-iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+# We use 10.0.0.0/16 to cover BOTH the 10.0.2.x (Apps) and 10.0.3.x (DB) subnets
+iptables -t nat -I POSTROUTING 1 -s 10.0.0.0/16 -o eth0 -j MASQUERADE
+iptables -I FORWARD 1 -s 10.0.0.0/16 -j ACCEPT
+iptables -I FORWARD 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A INPUT -p tcp --dport 32448 -j ACCEPT
 
 echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
@@ -398,8 +402,6 @@ EOF
   tags = { Name = "Master-Node" }
 }
 
-
-
 # WORKER NODES
 resource "aws_instance" "app_services" {
   count                  = var.app_instance_count
@@ -410,15 +412,29 @@ resource "aws_instance" "app_services" {
   vpc_security_group_ids = [aws_security_group.services_sg.id]
   key_name               = "vockey"
 
+  # Crucial: Wait for Master to be fully up
   depends_on = [aws_instance.master_node]
 
-  # --- CRITICAL: Using Variable for Port ---
   user_data = <<-EOF
-              #!/bin/bash
-              sleep 60
-              # Using the k8s_port variable here:
-              curl -sfL https://get.k3s.io | K3S_URL=https://${aws_instance.master_node.private_ip}:${var.k8s_port} K3S_TOKEN=mysecretpassword sh -
-              EOF
+    #!/bin/bash
+    exec > /var/log/user-data.log 2>&1
+
+    # 1. Force IPv4 for stability
+    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+
+    # 2. Wait for Internet access (NAT via Master Node)
+    echo "Waiting for NAT gateway to provide internet..."
+    until ping -c 1 8.8.8.8 >/dev/null 2>&1; do
+      sleep 5
+    done
+    echo "Internet access established!"
+
+    # 3. Install K3s Worker
+    # We use the static IP 10.0.1.10 for the Master Node
+    curl -sfL https://get.k3s.io | K3S_URL=https://10.0.1.10:${var.k8s_port} K3S_TOKEN=mysecretpassword sh -
+
+    echo "K3s Worker registration attempt complete."
+  EOF
 
   tags = { Name = "Service-Worker-${count.index + 1}" }
 }
@@ -428,36 +444,54 @@ resource "aws_instance" "db_instance" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.db_instance_type
   subnet_id              = aws_subnet.private_db.id
-  private_ip             = "10.0.3.100"
+  private_ip             = "10.0.3.100" # Static IP for consistency
   iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.db_sg.id]
   key_name               = "vockey"
 
+  # Ensures the Master Node (NAT Gateway) is created first
   depends_on = [aws_instance.master_node]
 
   user_data = <<-EOF
-              #!/bin/bash
-              # 1. Wait for system and network to be fully ready
-              sleep 30
-              apt-get update
-              apt-get install -y mongodb
+    #!/bin/bash
+    # 1. LOGGING SETUP
+    exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
-              # 2. Identify and Update the configuration file
-              # We use a broad sed to ensure we catch any variation of 127.0.0.1
-              if [ -f /etc/mongodb.conf ]; then
-                  sed -i 's/127.0.0.1/0.0.0.0/g' /etc/mongodb.conf
-              fi
+    echo "--- [STEP 1] NETWORK PREPARATION ---"
+    # Force APT to use IPv4 to avoid the IPv6 'Network Unreachable' errors seen in logs
+    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
 
-              if [ -f /etc/mongod.conf ]; then
-                  sed -i 's/127.0.0.1/0.0.0.0/g' /etc/mongod.conf
-              fi
+    # 2. WAIT FOR NAT GATEWAY (MASTER NODE)
+    # The script will loop here until it can ping the internet
+    echo "Checking internet connectivity..."
+    until ping -c 1 8.8.8.8 >/dev/null 2>&1; do
+      echo "Waiting for NAT connectivity via Master Node (10.0.1.10)..."
+      sleep 5
+    done
+    echo "Internet access confirmed!"
 
-              # 3. Force stop, enable, and start
-              # Sometimes the service name varies between mongodb and mongod
-              systemctl stop mongodb || systemctl stop mongod
-              systemctl enable mongodb || systemctl enable mongod
-              systemctl start mongodb || systemctl start mongod
-              EOF
+    echo "--- [STEP 2] INSTALL MONGODB ---"
+    # Wait for any background automatic updates to finish
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+      echo "Waiting for apt lock..."
+      sleep 5
+    done
+
+    apt-get update
+    apt-get install -y mongodb
+
+    echo "--- [STEP 3] CONFIGURE BIND IP ---"
+    # Allow MongoDB to listen on all interfaces so the Master Node can connect
+    if [ -f /etc/mongodb.conf ]; then
+        sed -i 's/bind_ip = 127.0.0.1/bind_ip = 0.0.0.0/g' /etc/mongodb.conf
+    fi
+
+    echo "--- [STEP 4] RESTART SERVICE ---"
+    systemctl restart mongodb
+    systemctl enable mongodb
+
+    echo "--- DATABASE SETUP COMPLETE ---"
+  EOF
 
   tags = { Name = "DB-Instance" }
 }
