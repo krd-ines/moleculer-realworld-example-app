@@ -231,10 +231,8 @@ resource "aws_security_group" "db_sg" {
     cidr_blocks = [var.anywhere_cidr] # <--- FIXED
   }
 }
-
+#tail -f /var/log/user-data.log
 # --- 5. Instances ---
-
-# MASTER NODE
 # MASTER NODE
 resource "aws_instance" "master_node" {
   ami                    = data.aws_ami.ubuntu.id
@@ -247,111 +245,63 @@ resource "aws_instance" "master_node" {
 
   user_data = <<-EOF
 #!/bin/bash
-# 1. LOGGING & SILENT MODE
+# 1. LOGGING SETUP
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
-echo "Starting User Data Script..."
 export DEBIAN_FRONTEND=noninteractive
 
-# 2. SAFETY LOCKS & UPDATES
-echo "Waiting for apt locks..."
+echo "--- [STEP 1] INSTALL TOOLS ---"
+# Wait for apt lock
 while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done
-dpkg --configure -a
 apt-get update
-apt-get install -y iptables-persistent openjdk-17-jre
+apt-get install -y iptables-persistent openjdk-17-jre docker.io unzip wget
 
-# 3. NETWORK CONFIG
+echo "--- [STEP 2] NETWORK CONFIGURATION ---"
+# Enable IP Forwarding
 sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+
+# Enable Masquerading (Critical for Pod Internet Access)
 iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
 echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
 echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | debconf-set-selections
+netfilter-persistent save
 
-# 4. INSTALL K3S
+echo "--- [STEP 3] INSTALL K3S ---"
 curl -sfL https://get.k3s.io | K3S_TOKEN=mysecretpassword sh -
 
-# 5. INSTALL JENKINS
-curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | tee \
-  /usr/share/keyrings/jenkins-keyring.asc > /dev/null
-echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
-  https://pkg.jenkins.io/debian-stable binary/ | tee \
-  /etc/apt/sources.list.d/jenkins.list > /dev/null
+echo "--- [STEP 4] INSTALL JENKINS ---"
+curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | tee /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/ | tee /etc/apt/sources.list.d/jenkins.list > /dev/null
 apt-get update
 apt-get install -y jenkins
+systemctl stop jenkins
 
-# 6. INSTALL DOCKER
-apt-get install -y docker.io
-usermod -aG docker jenkins
-chmod 666 /var/run/docker.sock
+echo "--- [STEP 5] INSTALL KUBECTL (Required for your Jenkinsfile) ---"
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
-# 7. CONNECT K8S
-sleep 10
+echo "--- [STEP 6] CONFIGURE KUBECONFIG FOR JENKINS ---"
+# Your Jenkinsfile specifically asks for /var/lib/jenkins/.kube/config
+while [ ! -f /etc/rancher/k3s/k3s.yaml ]; do sleep 2; done
 mkdir -p /var/lib/jenkins/.kube
 cp /etc/rancher/k3s/k3s.yaml /var/lib/jenkins/.kube/config
-chown jenkins:jenkins /var/lib/jenkins/.kube/config
+chown -R jenkins:jenkins /var/lib/jenkins/.kube
 chmod 600 /var/lib/jenkins/.kube/config
 
-# --- 8. AUTOMATION CONFIGURATION ---
+echo "--- [STEP 7] INSTALL PLUGINS ---"
+wget https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.12.13/jenkins-plugin-manager-2.12.13.jar
+java -jar jenkins-plugin-manager-2.12.13.jar \
+  --war /usr/share/java/jenkins.war \
+  --plugin-download-directory /var/lib/jenkins/plugins \
+  --plugins git workflow-aggregator docker-workflow
 
-# 8a. INSTALL PLUGINS (Wait for Jenkins to start first)
-echo "Waiting for Jenkins to start..."
-while ! curl -s http://localhost:8080 >/dev/null; do sleep 5; done
-
-# Download CLI
-wget http://localhost:8080/jnlpJars/jenkins-cli.jar
-
-# Install Plugins
-echo "Installing Plugins..."
-java -jar jenkins-cli.jar -s http://localhost:8080/ -noKeyAuth install-plugin git workflow-aggregator docker-workflow
-# Safe restart to load plugins
-java -jar jenkins-cli.jar -s http://localhost:8080/ -noKeyAuth safe-restart
-
-# Wait for restart to finish
-sleep 60
-
-# 8b. CREATE ADMIN USER (admin / admin123)
-mkdir -p /var/lib/jenkins/init.groovy.d
-cat <<EOG > /var/lib/jenkins/init.groovy.d/basic-security.groovy
-import jenkins.model.*
-import hudson.security.*
-def instance = Jenkins.getInstance()
-def hudsonRealm = new HudsonPrivateSecurityRealm(false)
-hudsonRealm.createAccount('admin', 'admin123')
-instance.setSecurityRealm(hudsonRealm)
-def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
-strategy.setAllowAnonymousRead(false)
-instance.setAuthorizationStrategy(strategy)
-instance.save()
-EOG
-
-# 8c. INJECT DOCKER CREDENTIALS (FROM TERRAFORM VARIABLE)
-cat <<EOG > /var/lib/jenkins/init.groovy.d/docker-creds.groovy
-import com.cloudbees.plugins.credentials.*
-import com.cloudbees.plugins.credentials.domains.*
-import com.cloudbees.plugins.credentials.impl.*
-import jenkins.model.Jenkins
-def domain = Domain.global()
-def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
-def dockerCreds = new UsernamePasswordCredentialsImpl(
-  CredentialsScope.GLOBAL,
-  "docker-hub-creds",
-  "Auto-generated Docker Hub",
-  "mariaboukhelfa2025",
-  "${var.dockerhub_password}"
-)
-if (store.getCredentials(domain).find { it.id == "docker-hub-creds" } == null) {
-  store.addCredentials(domain, dockerCreds)
-}
-EOG
-
-# 8d. FORCE JOB CREATION (FILE METHOD - 100% RELIABLE)
-# Instead of a script that might fail, we write the job configuration directly to disk.
+echo "--- [STEP 8] CONFIGURE JOB TO USE YOUR GIT REPO ---"
 mkdir -p /var/lib/jenkins/jobs/My-Pipeline-App
-
 cat <<XML > /var/lib/jenkins/jobs/My-Pipeline-App/config.xml
 <?xml version='1.1' encoding='UTF-8'?>
 <flow-definition plugin="workflow-job">
   <actions/>
-  <description>Auto-generated Pipeline linked to GitHub</description>
+  <description>Job using Jenkinsfile from Git</description>
   <keepDependencies>false</keepDependencies>
   <properties/>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
@@ -379,14 +329,57 @@ cat <<XML > /var/lib/jenkins/jobs/My-Pipeline-App/config.xml
 </flow-definition>
 XML
 
-# 9. FINAL PERMISSIONS & RESTART
-# Ensure Jenkins owns the new files we created
-chown -R jenkins:jenkins /var/lib/jenkins
-chown -R jenkins:jenkins /var/lib/jenkins/init.groovy.d
-chown -R jenkins:jenkins /var/lib/jenkins/jobs
+echo "--- [STEP 9] CREATE CREDENTIALS ---"
+mkdir -p /var/lib/jenkins/init.groovy.d
 
-# Restart to pick up the new Job and Credentials
-systemctl restart jenkins
+# 1. Admin User
+cat <<GROOVY > /var/lib/jenkins/init.groovy.d/basic-security.groovy
+import jenkins.model.*
+import hudson.security.*
+def instance = Jenkins.getInstance()
+def hudsonRealm = new HudsonPrivateSecurityRealm(false)
+hudsonRealm.createAccount('admin', 'admin123')
+instance.setSecurityRealm(hudsonRealm)
+def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+strategy.setAllowAnonymousRead(false)
+instance.setAuthorizationStrategy(strategy)
+instance.save()
+GROOVY
+
+# 2. Docker Hub Credentials (docker-hub-creds)
+cat <<GROOVY > /var/lib/jenkins/init.groovy.d/docker-creds.groovy
+import com.cloudbees.plugins.credentials.*
+import com.cloudbees.plugins.credentials.domains.*
+import com.cloudbees.plugins.credentials.impl.*
+import jenkins.model.Jenkins
+def domain = Domain.global()
+def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
+def dockerCreds = new UsernamePasswordCredentialsImpl(
+  CredentialsScope.GLOBAL,
+  "docker-hub-creds",
+  "Docker Hub Credentials",
+  "mariaboukhelfa2025",
+  "${var.dockerhub_password}"
+)
+if (store.getCredentials(domain).find { it.id == "docker-hub-creds" } == null) {
+  store.addCredentials(domain, dockerCreds)
+}
+GROOVY
+
+echo "--- [STEP 10] START JENKINS ---"
+usermod -aG docker jenkins
+chown -R jenkins:jenkins /var/lib/jenkins
+chmod 666 /var/run/docker.sock
+
+# Disable Setup Wizard
+mkdir -p /etc/systemd/system/jenkins.service.d/
+cat <<CONF > /etc/systemd/system/jenkins.service.d/override.conf
+[Service]
+Environment="JAVA_OPTS=-Djenkins.install.runSetupWizard=false"
+CONF
+systemctl daemon-reload
+
+systemctl start jenkins
 echo "Master Node Ready"
 EOF
 
