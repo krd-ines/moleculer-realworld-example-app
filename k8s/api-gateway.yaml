@@ -16,7 +16,7 @@ spec:
         role: api-master
       containers:
         - name: moleculer-app
-          image: YOUR_DOCKERHUB_USERNAME/moleculer-conduit:latest
+          image: mariaboukhelfa2025/moleculer-conduit:latest
           imagePullPolicy: Always
           env:
             - name: SERVICES

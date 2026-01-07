@@ -82,6 +82,13 @@ variable "app_instance_type" {
   default     = "t3.small"
 }
 
+variable "dockerhub_password" {
+  description = "The password or access token for Docker Hub"
+  type        = string
+  sensitive   = true
+  default     = "dckr_pat_P4D3a8515PBjtSgb0Aal55JaqH4"
+}
+
 variable "db_instance_type" {
   description = "DB node: t3.medium, ubuntu"
   type        = string

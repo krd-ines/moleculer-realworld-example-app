@@ -233,6 +233,7 @@ resource "aws_security_group" "db_sg" {
 }
 
 # --- 5. Instances ---
+
 # MASTER NODE
 resource "aws_instance" "master_node" {
   ami                    = data.aws_ami.ubuntu.id
@@ -245,65 +246,138 @@ resource "aws_instance" "master_node" {
 
   user_data = <<-EOF
 #!/bin/bash
-# 1. LOGGING & SILENT MODE (Crucial Fix)
+# 1. LOGGING & SILENT MODE
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 echo "Starting User Data Script..."
-
-# This line prevents the blue popup screens that get you stuck
 export DEBIAN_FRONTEND=noninteractive
 
-# 2. SAFETY: Wait for apt locks
+# 2. SAFETY LOCKS
 echo "Waiting for apt locks..."
 while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done
 while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; done
-
-# Force fix any interrupted installations
 dpkg --configure -a
 
-# 3. NETWORK NAT CONFIGURATION
+# 3. NETWORK CONFIG
 sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-
-# Update and install
 apt-get update
 echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
 echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | debconf-set-selections
 apt-get install -y iptables-persistent
 
-# 4. INSTALL K3S SERVER
+# 4. INSTALL K3S
 curl -sfL https://get.k3s.io | K3S_TOKEN=mysecretpassword sh -
 
 # 5. INSTALL JENKINS
 apt-get install -y openjdk-17-jre
-
 curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | tee \
   /usr/share/keyrings/jenkins-keyring.asc > /dev/null
 echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
   https://pkg.jenkins.io/debian-stable binary/ | tee \
   /etc/apt/sources.list.d/jenkins.list > /dev/null
-
 apt-get update
 apt-get install -y jenkins
-
-# Start Jenkins
-systemctl start jenkins
-systemctl enable jenkins
 
 # 6. INSTALL DOCKER
 apt-get install -y docker.io
 usermod -aG docker jenkins
 chmod 666 /var/run/docker.sock
 
-# 7. CONNECT JENKINS TO KUBERNETES
-# Wait 10s to ensure K3s has generated the config file
+# 7. CONNECT K8S
 sleep 10
 mkdir -p /var/lib/jenkins/.kube
 cp /etc/rancher/k3s/k3s.yaml /var/lib/jenkins/.kube/config
 chown jenkins:jenkins /var/lib/jenkins/.kube/config
 chmod 600 /var/lib/jenkins/.kube/config
 
-# Final restart
+# --- 8. AUTOMATION CONFIGURATION ---
+mkdir -p /var/lib/jenkins/init.groovy.d
+
+# 8a. CREATE ADMIN USER (admin / admin123)
+cat <<EOG > /var/lib/jenkins/init.groovy.d/basic-security.groovy
+import jenkins.model.*
+import hudson.security.*
+
+def instance = Jenkins.getInstance()
+def hudsonRealm = new HudsonPrivateSecurityRealm(false)
+hudsonRealm.createAccount('admin', 'admin123')
+instance.setSecurityRealm(hudsonRealm)
+
+def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+strategy.setAllowAnonymousRead(false)
+instance.setAuthorizationStrategy(strategy)
+instance.save()
+instance.setInstallState(Jenkins.install.InstallState.INITIAL_SETUP_COMPLETED)
+EOG
+
+# 8b. INSTALL PLUGINS (Git & Pipeline)
+# We use the Jenkins CLI to install plugins automatically so the job below works.
+wget http://localhost:8080/jnlpJars/jenkins-cli.jar
+# Wait for Jenkins to fully start before running CLI
+sleep 60
+java -jar jenkins-cli.jar -s http://localhost:8080/ -auth admin:admin123 install-plugin git workflow-aggregator docker-workflow
+java -jar jenkins-cli.jar -s http://localhost:8080/ -auth admin:admin123 restart
+
+# 8c. CREATE THE JOB LINKED TO YOUR GITHUB
+cat <<EOG > /var/lib/jenkins/init.groovy.d/seed-job.groovy
+import jenkins.model.*
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
+import hudson.plugins.git.GitSCM
+import hudson.plugins.git.BranchSpec
+
+// --- REPLACE THIS WITH YOUR GITHUB REPO URL ---
+def gitRepo = "https://github.com/krd-ines/moleculer-realworld-example-app.git"
+def jobName = "My-Pipeline-App"
+
+def instance = Jenkins.getInstance()
+
+if (instance.getItem(jobName) == null) {
+  def job = instance.createProject(WorkflowJob.class, jobName)
+  def scm = new GitSCM(gitRepo)
+  scm.branches = [new BranchSpec("*/aws-migration")]
+
+  // This tells Jenkins: "Look inside the repo for a file named 'Jenkinsfile'"
+  def flowDefinition = new CpsScmFlowDefinition(scm, "Jenkinsfile")
+  flowDefinition.setLightweight(true)
+
+  job.setDefinition(flowDefinition)
+  job.save()
+  println("Job created successfully.")
+}
+EOG
+
+# 8d. AUTOMATION: ADD DOCKER HUB CREDENTIALS (NEW STEP)
+# This injects the password provided via Terraform variable 'dockerhub_password'
+cat <<EOG > /var/lib/jenkins/init.groovy.d/docker-creds.groovy
+import com.cloudbees.plugins.credentials.*
+import com.cloudbees.plugins.credentials.domains.*
+import com.cloudbees.plugins.credentials.impl.*
+import hudson.util.Secret
+import jenkins.model.Jenkins
+
+def domain = Domain.global()
+def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
+
+def dockerCreds = new UsernamePasswordCredentialsImpl(
+  CredentialsScope.GLOBAL,
+  "docker-hub-creds",          // ID (Matches Jenkinsfile)
+  "Auto-generated Docker Hub", // Description
+  "mariaboukhelfa2025",        // Username
+  "${var.dockerhub_password}"  // Password from Terraform Variable
+)
+
+if (store.getCredentials(domain).find { it.id == "docker-hub-creds" } == null) {
+  store.addCredentials(domain, dockerCreds)
+  println("Docker Hub Credentials added successfully")
+}
+EOG
+
+# Fix permissions
+chown -R jenkins:jenkins /var/lib/jenkins/init.groovy.d
+
+# 9. FINAL RESTART
 systemctl restart jenkins
 echo "Master Node Ready"
 EOF
