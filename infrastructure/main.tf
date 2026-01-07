@@ -108,17 +108,18 @@ resource "aws_network_acl" "db_acl" {
   vpc_id     = aws_vpc.main.id
   subnet_ids = [aws_subnet.private_db.id]
 
-  # 1. Allow ALL Inbound from VPC (This covers the Master and Workers)
+  # Allow ALL Inbound
+  # (Crucial: This allows the response from 8.8.8.8 to get back in)
   ingress {
     protocol   = "-1"
     rule_no    = 100
     action     = "allow"
-    cidr_block = var.vpc_cidr
+    cidr_block = "0.0.0.0/0"  # Changed from var.vpc_cidr
     from_port  = 0
     to_port    = 0
   }
 
-  # 2. Allow ALL Outbound (This ensures the answer gets back to the requester)
+  # Allow ALL Outbound
   egress {
     protocol   = "-1"
     rule_no    = 100
@@ -263,7 +264,7 @@ echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 iptables -F
 iptables -t nat -F
 # We use 10.0.0.0/16 to cover BOTH the 10.0.2.x (Apps) and 10.0.3.x (DB) subnets
-iptables -t nat -I POSTROUTING 1 -s 10.0.0.0/16 -o eth0 -j MASQUERADE
+iptables -t nat -I POSTROUTING 1 -s 10.0.0.0/16 -o ens5 -j MASQUERADE
 iptables -I FORWARD 1 -s 10.0.0.0/16 -j ACCEPT
 iptables -I FORWARD 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A INPUT -p tcp --dport 32448 -j ACCEPT
@@ -440,6 +441,8 @@ resource "aws_instance" "app_services" {
   tags = { Name = "Service-Worker-${count.index + 1}" }
 }
 
+#ssh -i "vockey.pem" ubuntu@10.0.3.100
+#cat /var/log/user-data.log
 # DATABASE INSTANCE
 resource "aws_instance" "db_instance" {
   ami                    = data.aws_ami.ubuntu.id
