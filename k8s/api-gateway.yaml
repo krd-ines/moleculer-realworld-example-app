@@ -21,7 +21,6 @@ spec:
               value: "services/api.service.js"
             - name: PORT
               value: "3000"
-          # Import shared variables (Mongo, NATS) from ConfigMap
           envFrom:
             - configMapRef:
                 name: moleculer-env
@@ -33,7 +32,7 @@ kind: Service
 metadata:
   name: api-service
 spec:
-  type: LoadBalancer
+  type: NodePort
   selector:
     app: api-gateway
   ports:
