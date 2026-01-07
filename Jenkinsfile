@@ -55,13 +55,13 @@ pipeline {
 
                     env.KUBECONFIG = '/var/lib/jenkins/.kube/config'
 
-                    sh 'kubectl apply -f config.yaml'
-                    sh 'kubectl apply -f nats.yaml'
+                    sh 'kubectl apply -f k8s/config.yaml'
+                    sh 'kubectl apply -f k8s/nats.yaml'
 
 
                     services.each { service ->
                         echo "--- Deploying ${service} ---"
-                        sh "kubectl apply -f ${service}.yaml"
+                        sh "kubectl apply -f k8s/${service}.yaml"
 
 
                         sh "kubectl rollout restart deployment/${service}"
