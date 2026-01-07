@@ -233,7 +233,6 @@ resource "aws_security_group" "db_sg" {
 }
 
 # --- 5. Instances ---
-
 # MASTER NODE
 resource "aws_instance" "master_node" {
   ami                    = data.aws_ami.ubuntu.id
@@ -245,45 +244,74 @@ resource "aws_instance" "master_node" {
   source_dest_check      = false
 
   user_data = <<-EOF
-              #!/bin/bash
-              sysctl -w net.ipv4.ip_forward=1
-              echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-              iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-              apt-get update && apt-get install -y iptables-persistent
+#!/bin/bash
+# 1. LOGGING & SILENT MODE (Crucial Fix)
+exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+echo "Starting User Data Script..."
 
-              # Install K3s Server
-              curl -sfL https://get.k3s.io | K3S_TOKEN=mysecretpassword sh -
+# This line prevents the blue popup screens that get you stuck
+export DEBIAN_FRONTEND=noninteractive
 
-              # Install Jenkins dependencies
-              apt-get install -y openjdk-17-jre
-              curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | tee \
-                /usr/share/keyrings/jenkins-keyring.asc > /dev/null
-              echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
-                https://pkg.jenkins.io/debian-stable binary/ | tee \
-                /etc/apt/sources.list.d/jenkins.list > /dev/null
-              apt-get update
-              apt-get install -y jenkins
-              systemctl start jenkins
-              systemctl enable jenkins
+# 2. SAFETY: Wait for apt locks
+echo "Waiting for apt locks..."
+while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done
+while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; done
 
-              # Install Docker for Jenkins
-              apt-get install -y docker.io
-              usermod -aG docker jenkins
-              chmod 666 /var/run/docker.sock
+# Force fix any interrupted installations
+dpkg --configure -a
 
-              # Configure Kubeconfig for Jenkins
-              sleep 30
-              mkdir -p /var/lib/jenkins/.kube
-              cp /etc/rancher/k3s/k3s.yaml /var/lib/jenkins/.kube/config
-              chown jenkins:jenkins /var/lib/jenkins/.kube/config
-              chmod 600 /var/lib/jenkins/.kube/config
+# 3. NETWORK NAT CONFIGURATION
+sysctl -w net.ipv4.ip_forward=1
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
 
-              systemctl restart jenkins
-              echo "Master Node Ready"
-              EOF
+# Update and install
+apt-get update
+echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
+echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | debconf-set-selections
+apt-get install -y iptables-persistent
+
+# 4. INSTALL K3S SERVER
+curl -sfL https://get.k3s.io | K3S_TOKEN=mysecretpassword sh -
+
+# 5. INSTALL JENKINS
+apt-get install -y openjdk-17-jre
+
+curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | tee \
+  /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
+  https://pkg.jenkins.io/debian-stable binary/ | tee \
+  /etc/apt/sources.list.d/jenkins.list > /dev/null
+
+apt-get update
+apt-get install -y jenkins
+
+# Start Jenkins
+systemctl start jenkins
+systemctl enable jenkins
+
+# 6. INSTALL DOCKER
+apt-get install -y docker.io
+usermod -aG docker jenkins
+chmod 666 /var/run/docker.sock
+
+# 7. CONNECT JENKINS TO KUBERNETES
+# Wait 10s to ensure K3s has generated the config file
+sleep 10
+mkdir -p /var/lib/jenkins/.kube
+cp /etc/rancher/k3s/k3s.yaml /var/lib/jenkins/.kube/config
+chown jenkins:jenkins /var/lib/jenkins/.kube/config
+chmod 600 /var/lib/jenkins/.kube/config
+
+# Final restart
+systemctl restart jenkins
+echo "Master Node Ready"
+EOF
 
   tags = { Name = "Master-Node" }
 }
+
+
 
 # WORKER NODES
 resource "aws_instance" "app_services" {
@@ -347,11 +375,13 @@ resource "aws_route_table_association" "public_assoc" {
 
 resource "aws_route_table" "private_rt" {
   vpc_id = aws_vpc.main.id
-  route {
-    cidr_block           = var.anywhere_cidr # <--- FIXED
-    instance_id          = aws_instance.master_node.id
-  }
   tags = { Name = "Private-Route-Table" }
+}
+
+resource "aws_route" "private_nat_route" {
+  route_table_id         = aws_route_table.private_rt.id
+  destination_cidr_block = var.anywhere_cidr
+  network_interface_id   = aws_instance.master_node.primary_network_interface_id
 }
 
 resource "aws_route_table_association" "private_app_assoc" {
