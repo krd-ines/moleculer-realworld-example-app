@@ -452,6 +452,7 @@ resource "aws_route_table" "private_rt" {
   tags = { Name = "Private-Route-Table" }
 }
 
+
 resource "aws_route" "private_nat_route" {
   route_table_id         = aws_route_table.private_rt.id
   destination_cidr_block = var.anywhere_cidr
