@@ -1,3 +1,7 @@
+# $Env:AWS_ACCESS_KEY_ID="ASIA..."
+# $Env:AWS_SECRET_ACCESS_KEY="wJalrXU..."
+# $Env:AWS_SESSION_TOKEN="FQoGZXI..."
+# $Env:AWS_DEFAULT_REGION="us-east-1"
 provider "aws" {
   region = var.aws_region
 }
@@ -236,6 +240,7 @@ resource "aws_security_group" "db_sg" {
 # --- 5. Instances ---
 # MASTER NODE
 resource "aws_instance" "master_node" {
+  # ... (Keep ami, instance_type, etc. exactly the same) ...
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.master_instance_type
   subnet_id              = aws_subnet.public.id
@@ -247,10 +252,41 @@ resource "aws_instance" "master_node" {
 
   user_data = <<-EOF
 #!/bin/bash
-# 1. LOGGING SETUP
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 export DEBIAN_FRONTEND=noninteractive
 
+echo "--- [STEP 0] SETUP PERSISTENT EBS VOLUME (NITRO/T3 FIXED) ---"
+MOUNT_POINT="/var/lib/jenkins"
+
+# FIX: Simplified detection.
+# We look for any NVMe disk starting with index 1 (e.g. nvme1n1), avoiding root (nvme0n1).
+echo "Waiting for data volume..."
+while true; do
+  DEVICE_NAME=$(ls -1 /dev/nvme[1-9]n1 2>/dev/null | head -n 1)
+
+  if [ ! -z "$DEVICE_NAME" ]; then
+    echo "Found available volume: $DEVICE_NAME"
+    break
+  fi
+  sleep 5
+done
+
+# Create filesystem if it doesn't exist
+if ! blkid $DEVICE_NAME; then
+  echo "Formatting new volume..."
+  mkfs.ext4 $DEVICE_NAME
+fi
+
+# Create Mount Point and Mount
+mkdir -p $MOUNT_POINT
+mount $DEVICE_NAME $MOUNT_POINT
+
+# Persistence
+UUID=$(blkid -s UUID -o value $DEVICE_NAME)
+echo "UUID=$UUID $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
+echo "Persistence ready at $MOUNT_POINT"
+
+# ... (Keep STEP 1 through STEP 11 exactly the same as before) ...
 echo "--- [STEP 1] INSTALL TOOLS ---"
 while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done
 apt-get update
@@ -260,10 +296,8 @@ echo "--- [STEP 2] NETWORK CONFIGURATION ---"
 sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 
-# Clean start only for standard tables - then INSERT at position 1
 iptables -F
 iptables -t nat -F
-# We use 10.0.0.0/16 to cover BOTH the 10.0.2.x (Apps) and 10.0.3.x (DB) subnets
 iptables -t nat -I POSTROUTING 1 -s 10.0.0.0/16 -o ens5 -j MASQUERADE
 iptables -I FORWARD 1 -s 10.0.0.0/16 -j ACCEPT
 iptables -I FORWARD 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
@@ -301,7 +335,7 @@ java -jar jenkins-plugin-manager-2.12.13.jar \
   --plugin-download-directory /var/lib/jenkins/plugins \
   --plugins git workflow-aggregator docker-workflow
 
-echo "--- [STEP 8] CONFIGURE JOB (FIX: ADDED QUIET PERIOD) ---"
+echo "--- [STEP 8] CONFIGURE JOB ---"
 mkdir -p /var/lib/jenkins/jobs/My-Pipeline-App
 cat <<XML > /var/lib/jenkins/jobs/My-Pipeline-App/config.xml
 <?xml version='1.1' encoding='UTF-8'?>
@@ -334,7 +368,7 @@ cat <<XML > /var/lib/jenkins/jobs/My-Pipeline-App/config.xml
 </flow-definition>
 XML
 
-echo "--- [STEP 9] CREATE CREDENTIALS & LIMIT EXECUTORS ---"
+echo "--- [STEP 9] CREATE CREDENTIALS & TRIGGER ---"
 mkdir -p /var/lib/jenkins/init.groovy.d
 
 cat <<GROOVY > /var/lib/jenkins/init.groovy.d/limit-executors.groovy
@@ -375,11 +409,20 @@ if (store.getCredentials(domain).find { it.id == "docker-hub-creds" } == null) {
 }
 GROOVY
 
+cat <<GROOVY > /var/lib/jenkins/init.groovy.d/trigger-build.groovy
+import jenkins.model.*
+import hudson.model.*
+Thread.sleep(10000)
+def job = Jenkins.instance.getItem("My-Pipeline-App")
+if (job != null) {
+  job.scheduleBuild(new Cause.UserIdCause())
+}
+GROOVY
+
 echo "--- [STEP 10] START JENKINS ---"
 usermod -aG docker jenkins
 chown -R jenkins:jenkins /var/lib/jenkins
 chmod 666 /var/run/docker.sock
-
 mkdir -p /etc/systemd/system/jenkins.service.d/
 cat <<CONF > /etc/systemd/system/jenkins.service.d/override.conf
 [Service]
@@ -388,8 +431,7 @@ CONF
 systemctl daemon-reload
 systemctl start jenkins
 
-echo "--- [STEP 11] DOCKER DNS FIX ---"
-# This ensures docker build can resolve registry.npmjs.org
+echo "--- [STEP 11] DOCKER DNS FIX & KUBECONFIG ---"
 mkdir -p /etc/docker
 echo '{"dns": ["8.8.8.8", "1.1.1.1"]}' > /etc/docker/daemon.json
 systemctl restart docker
@@ -403,7 +445,18 @@ EOF
   tags = { Name = "Master-Node" }
 }
 
+# --- MASTER EBS VOLUME ---
+resource "aws_ebs_volume" "master_vol" {
+  availability_zone = aws_instance.master_node.availability_zone
+  size              = 10
+  tags              = { Name = "Master-Data-Volume" }
+}
 
+resource "aws_volume_attachment" "master_att" {
+  device_name = "/dev/sdh"
+  volume_id   = aws_ebs_volume.master_vol.id
+  instance_id = aws_instance.master_node.id
+}
 # WORKER NODES
 resource "aws_instance" "app_services" {
   count                  = var.app_instance_count
@@ -413,32 +466,62 @@ resource "aws_instance" "app_services" {
   iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.services_sg.id]
   key_name               = "vockey"
-
-  # Crucial: Wait for Master to be fully up
-  depends_on = [aws_instance.master_node]
+  depends_on             = [aws_instance.master_node]
 
   user_data = <<-EOF
     #!/bin/bash
     exec > /var/log/user-data.log 2>&1
 
-    # 1. Force IPv4 for stability
-    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+    echo "--- [STEP 0] SETUP PERSISTENT EBS VOLUME (NITRO/T3 FIXED) ---"
+    MOUNT_POINT="/var/lib/rancher"
 
-    # 2. Wait for Internet access (NAT via Master Node)
-    echo "Waiting for NAT gateway to provide internet..."
-    until ping -c 1 8.8.8.8 >/dev/null 2>&1; do
+    # FIX: Simple detection for NVMe drives (skipping root nvme0n1)
+    echo "Waiting for data volume..."
+    while true; do
+      DEVICE_NAME=$(ls -1 /dev/nvme[1-9]n1 2>/dev/null | head -n 1)
+      if [ ! -z "$DEVICE_NAME" ]; then
+        echo "Found available volume: $DEVICE_NAME"
+        break
+      fi
       sleep 5
     done
-    echo "Internet access established!"
 
-    # 3. Install K3s Worker
-    # We use the static IP 10.0.1.10 for the Master Node
+    # Format if needed
+    if ! blkid $DEVICE_NAME; then
+      mkfs.ext4 $DEVICE_NAME
+    fi
+
+    mkdir -p $MOUNT_POINT
+    mount $DEVICE_NAME $MOUNT_POINT
+
+    # FIX: Use UUID for reliable mounting on reboot
+    UUID=$(blkid -s UUID -o value $DEVICE_NAME)
+    echo "UUID=$UUID $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
+
+    echo "--- [STEP 1] NETWORK ---"
+    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+    until ping -c 1 8.8.8.8 >/dev/null 2>&1; do sleep 5; done
+
+    echo "--- [STEP 2] K3S WORKER ---"
     curl -sfL https://get.k3s.io | K3S_URL=https://10.0.1.10:${var.k8s_port} K3S_TOKEN=mysecretpassword sh -
-
-    echo "K3s Worker registration attempt complete."
   EOF
 
   tags = { Name = "Service-Worker-${count.index + 1}" }
+}
+
+# --- WORKER EBS VOLUMES ---
+resource "aws_ebs_volume" "worker_vol" {
+  count             = var.app_instance_count
+  availability_zone = aws_instance.app_services[count.index].availability_zone
+  size              = 10
+  tags              = { Name = "Worker-Data-${count.index + 1}" }
+}
+
+resource "aws_volume_attachment" "worker_att" {
+  count       = var.app_instance_count
+  device_name = "/dev/sdh"
+  volume_id   = aws_ebs_volume.worker_vol[count.index].id
+  instance_id = aws_instance.app_services[count.index].id
 }
 
 #ssh -i "vockey.pem" ubuntu@10.0.3.100
@@ -448,56 +531,73 @@ resource "aws_instance" "db_instance" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.db_instance_type
   subnet_id              = aws_subnet.private_db.id
-  private_ip             = "10.0.3.100" # Static IP for consistency
+  private_ip             = "10.0.3.100"
   iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.db_sg.id]
   key_name               = "vockey"
-
-  # Ensures the Master Node (NAT Gateway) is created first
-  depends_on = [aws_instance.master_node]
+  depends_on             = [aws_instance.master_node]
 
   user_data = <<-EOF
     #!/bin/bash
-    # 1. LOGGING SETUP
     exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
-    echo "--- [STEP 1] NETWORK PREPARATION ---"
-    # Force APT to use IPv4 to avoid the IPv6 'Network Unreachable' errors seen in logs
+    echo "--- [STEP 0] SETUP PERSISTENT EBS VOLUME (NITRO/T3 FIXED) ---"
+    MOUNT_POINT="/var/lib/mongodb"
+
+    # FIX: Simple detection for NVMe drives
+    echo "Waiting for data volume..."
+    while true; do
+      DEVICE_NAME=$(ls -1 /dev/nvme[1-9]n1 2>/dev/null | head -n 1)
+      if [ ! -z "$DEVICE_NAME" ]; then
+        echo "Found available volume: $DEVICE_NAME"
+        break
+      fi
+      sleep 5
+    done
+
+    if ! blkid $DEVICE_NAME; then
+      mkfs.ext4 $DEVICE_NAME
+    fi
+
+    mkdir -p $MOUNT_POINT
+    mount $DEVICE_NAME $MOUNT_POINT
+
+    # FIX: UUID for fstab
+    UUID=$(blkid -s UUID -o value $DEVICE_NAME)
+    echo "UUID=$UUID $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
+
+    echo "--- [STEP 1] INSTALL MONGO ---"
     echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+    until ping -c 1 8.8.8.8 >/dev/null 2>&1; do sleep 5; done
 
-    # 2. WAIT FOR NAT GATEWAY (MASTER NODE)
-    # The script will loop here until it can ping the internet
-    echo "Checking internet connectivity..."
-    until ping -c 1 8.8.8.8 >/dev/null 2>&1; do
-      echo "Waiting for NAT connectivity via Master Node (10.0.1.10)..."
-      sleep 5
-    done
-    echo "Internet access confirmed!"
-
-    echo "--- [STEP 2] INSTALL MONGODB ---"
-    # Wait for any background automatic updates to finish
-    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-      echo "Waiting for apt lock..."
-      sleep 5
-    done
-
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
     apt-get update
     apt-get install -y mongodb
 
-    echo "--- [STEP 3] CONFIGURE BIND IP ---"
-    # Allow MongoDB to listen on all interfaces so the Master Node can connect
+    chown -R mongodb:mongodb /var/lib/mongodb
+
+    echo "--- [STEP 2] CONFIG ---"
     if [ -f /etc/mongodb.conf ]; then
         sed -i 's/bind_ip = 127.0.0.1/bind_ip = 0.0.0.0/g' /etc/mongodb.conf
     fi
-
-    echo "--- [STEP 4] RESTART SERVICE ---"
     systemctl restart mongodb
     systemctl enable mongodb
-
-    echo "--- DATABASE SETUP COMPLETE ---"
   EOF
 
   tags = { Name = "DB-Instance" }
+}
+
+# --- DATABASE EBS VOLUME ---
+resource "aws_ebs_volume" "db_vol" {
+  availability_zone = aws_instance.db_instance.availability_zone
+  size              = 10
+  tags              = { Name = "DB-Data-Volume" }
+}
+
+resource "aws_volume_attachment" "db_att" {
+  device_name = "/dev/sdh"
+  volume_id   = aws_ebs_volume.db_vol.id
+  instance_id = aws_instance.db_instance.id
 }
 
 

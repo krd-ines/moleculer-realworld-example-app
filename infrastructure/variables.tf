@@ -118,3 +118,9 @@ variable "anywhere_cidr" {
   type        = string
   default     = "0.0.0.0/0"
 }
+variable "k3s_token" {
+  description = "Shared secret token for K3s nodes to join the cluster"
+  type        = string
+  sensitive   = true
+  default     = "mysecretpassword"
+}
