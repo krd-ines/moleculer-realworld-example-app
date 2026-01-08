@@ -405,30 +405,47 @@ cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
 chown -R ubuntu:ubuntu /home/ubuntu/.kube
 chmod 600 /home/ubuntu/.kube/config
 
-echo "--- [STEP 12] INSTALL CLOUDWATCH AGENT ---"
-wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
-dpkg -i -E ./amazon-cloudwatch-agent.deb
+  # --- CLOUDWATCH AGENT SETUP (Corrected) ---
 
-cat <<-JSON > /opt/aws/amazon-cloudwatch-agent/bin/config.json
-{
-  "agent": { "metrics_collection_interval": 60, "run_as_user": "root" },
-  "metrics": {
-    "metrics_collected": {
-      "disk": {
-        "measurement": ["used_percent"],
-        "metrics_collection_interval": 60,
-        "resources": ["/", "/var/lib/jenkins"]
-      },
-      "mem": { "measurement": ["mem_used_percent"], "metrics_collection_interval": 60 }
+  # 1. Download the Agent
+  wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+  dpkg -i -E ./amazon-cloudwatch-agent.deb
+
+  # 2. Create the Configuration File (Crucial Step!)
+  cat <<EOT >> /opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json
+  {
+    "agent": {
+      "metrics_collection_interval": 60,
+      "run_as_user": "root"
+    },
+    "metrics": {
+      "metrics_collected": {
+        "disk": {
+          "measurement": [
+            "used_percent"
+          ],
+          "metrics_collection_interval": 60,
+          "resources": [
+            "/"
+          ]
+        },
+        "mem": {
+          "measurement": [
+            "mem_used_percent"
+          ],
+          "metrics_collection_interval": 60
+        }
+      }
     }
   }
-}
-JSON
-
-/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-  -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json -s
+EOT
+  # 3. Start the Agent using that file
+  /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config \
+    -m ec2 \
+    -c file:/opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json \
+    -s
 EOF
-
   tags = { Name = "Master-Node" }
 }
 
@@ -485,28 +502,46 @@ resource "aws_instance" "app_services" {
     echo "--- [STEP 2] K3S WORKER ---"
     curl -sfL https://get.k3s.io | K3S_URL=https://10.0.1.10:${var.k8s_port} K3S_TOKEN=mysecretpassword sh -
 
-    echo "--- [STEP 3] INSTALL CLOUDWATCH AGENT ---"
+    echo "--- [STEP 3] INSTALL CLOUDWATCH AGENT (CORRECTED) ---"
     wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
     dpkg -i -E ./amazon-cloudwatch-agent.deb
 
-    cat <<-JSON > /opt/aws/amazon-cloudwatch-agent/bin/config.json
+    # Create config file (Monitoring '/' and the K3s volume '/var/lib/rancher')
+    cat <<EOT >> /opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json
     {
-      "agent": { "metrics_collection_interval": 60, "run_as_user": "root" },
+      "agent": {
+        "metrics_collection_interval": 60,
+        "run_as_user": "root"
+      },
       "metrics": {
         "metrics_collected": {
           "disk": {
-            "measurement": ["used_percent"],
+            "measurement": [
+              "used_percent"
+            ],
             "metrics_collection_interval": 60,
-            "resources": ["/", "/var/lib/rancher"]
+            "resources": [
+              "/",
+              "/var/lib/rancher"
+            ]
           },
-          "mem": { "measurement": ["mem_used_percent"], "metrics_collection_interval": 60 }
+          "mem": {
+            "measurement": [
+              "mem_used_percent"
+            ],
+            "metrics_collection_interval": 60
+          }
         }
       }
     }
-    JSON
+EOT
 
+    # Start the agent using the correct file path
     /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-      -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json -s
+      -a fetch-config \
+      -m ec2 \
+      -c file:/opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json \
+      -s
   EOF
 
   tags = { Name = "Service-Worker-${count.index + 1}" }
@@ -575,28 +610,47 @@ resource "aws_instance" "db_instance" {
     systemctl restart mongodb
     systemctl enable mongodb
 
-    echo "--- [STEP 3] INSTALL CLOUDWATCH AGENT ---"
+    echo "--- [STEP 3] INSTALL CLOUDWATCH AGENT (CORRECTED) ---"
     wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
     dpkg -i -E ./amazon-cloudwatch-agent.deb
 
-    cat <<-JSON > /opt/aws/amazon-cloudwatch-agent/bin/config.json
+    # Create the config file with explicit Disk and Memory settings
+    # Note: We added "/var/lib/mongodb" to the resources list so you can monitor the DB volume!
+    cat <<EOT >> /opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json
     {
-      "agent": { "metrics_collection_interval": 60, "run_as_user": "root" },
+      "agent": {
+        "metrics_collection_interval": 60,
+        "run_as_user": "root"
+      },
       "metrics": {
         "metrics_collected": {
           "disk": {
-            "measurement": ["used_percent"],
+            "measurement": [
+              "used_percent"
+            ],
             "metrics_collection_interval": 60,
-            "resources": ["/", "/var/lib/mongodb"]
+            "resources": [
+              "/",
+              "/var/lib/mongodb"
+            ]
           },
-          "mem": { "measurement": ["mem_used_percent"], "metrics_collection_interval": 60 }
+          "mem": {
+            "measurement": [
+              "mem_used_percent"
+            ],
+            "metrics_collection_interval": 60
+          }
         }
       }
     }
-    JSON
+EOT
 
+    # Start the agent using the correct file path
     /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-      -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json -s
+      -a fetch-config \
+      -m ec2 \
+      -c file:/opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json \
+      -s
   EOF
 
   tags = { Name = "DB-Instance" }
@@ -651,119 +705,75 @@ resource "aws_route_table_association" "private_db_assoc" {
 }
 
 # --- 7. MONITORING DASHBOARD (FIXED SYNTAX) ---
-resource "aws_cloudwatch_dashboard" "lab_dashboard" {
-  dashboard_name = "DevOps-Lab-Monitor"
+resource "aws_cloudwatch_dashboard" "lab_monitor" {
+  dashboard_name = "DevOps-Lab-Monitor-Auto"
 
   dashboard_body = jsonencode({
     widgets = [
+      # --- ROW 1: MASTER NODE ---
       {
-        type   = "text"
+        type   = "metric"
         x      = 0
         y      = 0
-        width  = 24
-        height = 1
-        properties = {
-          markdown = "# 📊 Infrastructure Overview"
-        }
-      },
-      # --- ROW 1: MASTER NODE (JENKINS) ---
-      {
-        type   = "metric"
-        x      = 0
-        y      = 1
-        width  = 8
-        height = 6
-        properties = {
-          view    = "timeSeries"
-          stacked = false
-          region  = var.aws_region
-          title   = "Master CPU"
-          metrics = [
-            [ "AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.master_node.id ]
-          ]
-        }
-      },
-      {
-        type   = "metric"
-        x      = 8
-        y      = 1
-        width  = 8
-        height = 6
-        properties = {
-          view    = "timeSeries"
-          stacked = false
-          region  = var.aws_region
-          title   = "Master RAM %"
-          metrics = [
-            [ "CWAgent", "mem_used_percent", "InstanceId", aws_instance.master_node.id ]
-          ]
-        }
-      },
-      {
-        type   = "metric"
-        x      = 16
-        y      = 1
-        width  = 8
-        height = 6
-        properties = {
-          view    = "timeSeries"
-          stacked = false
-          region  = var.aws_region
-          title   = "Jenkins Disk Usage (/var/lib/jenkins)"
-          metrics = [
-            [ "CWAgent", "disk_used_percent", "InstanceId", aws_instance.master_node.id, "path", "/var/lib/jenkins", "device", "nvme1n1", "fstype", "ext4" ]
-          ]
-        }
-      },
-      # --- ROW 2: DATABASE ---
-      {
-        type   = "metric"
-        x      = 0
-        y      = 7
         width  = 12
         height = 6
         properties = {
-          view    = "timeSeries"
-          stacked = false
-          region  = var.aws_region
-          title   = "Database CPU"
+          # "SEARCH" finds the metric regardless of extra dimensions like ImageId or fstype
           metrics = [
-            [ "AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.db_instance.id ]
+            [ { expression: "SEARCH('{CWAgent,InstanceId} MetricName=\"mem_used_percent\" InstanceId=${aws_instance.master_node.id}', 'Average', 60)", label: "Master RAM %", id: "m1" } ]
           ]
+          view    = "timeSeries"
+          region  = "us-east-1"
+          title   = "Master Node - RAM Usage"
         }
       },
       {
         type   = "metric"
         x      = 12
-        y      = 7
+        y      = 0
         width  = 12
         height = 6
         properties = {
-          view    = "timeSeries"
-          stacked = false
-          region  = var.aws_region
-          title   = "MongoDB Storage (/var/lib/mongodb)"
           metrics = [
-            [ "CWAgent", "disk_used_percent", "InstanceId", aws_instance.db_instance.id, "path", "/var/lib/mongodb", "device", "nvme1n1", "fstype", "ext4" ]
+            # We filter by InstanceId AND the specific path "/"
+            [ { expression: "SEARCH('{CWAgent,InstanceId,path} MetricName=\"disk_used_percent\" InstanceId=${aws_instance.master_node.id} path=\"/\"', 'Average', 60)", label: "Master Disk /", id: "m2" } ]
           ]
+          view    = "timeSeries"
+          region  = "us-east-1"
+          title   = "Master Node - Disk Usage"
         }
       },
-      # --- ROW 3: WORKERS ---
+
+      # --- ROW 2: DB INSTANCE ---
       {
         type   = "metric"
         x      = 0
-        y      = 13
-        width  = 24
+        y      = 6
+        width  = 12
         height = 6
         properties = {
-          view    = "timeSeries"
-          stacked = false
-          region  = var.aws_region
-          title   = "Worker Nodes CPU Load"
           metrics = [
-            [ "AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.app_services[0].id, { label = "Worker 1" } ],
-            [ "AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.app_services[1].id, { label = "Worker 2" } ]
+            [ { expression: "SEARCH('{CWAgent,InstanceId} MetricName=\"mem_used_percent\" InstanceId=${aws_instance.db_instance.id}', 'Average', 60)", label: "DB RAM %", id: "m3" } ]
           ]
+          view    = "timeSeries"
+          region  = "us-east-1"
+          title   = "Database - RAM Usage"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 6
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            # Specifically searching for the mongodb volume path
+            [ { expression: "SEARCH('{CWAgent,InstanceId,path} MetricName=\"disk_used_percent\" InstanceId=${aws_instance.db_instance.id} path=\"/var/lib/mongodb\"', 'Average', 60)", label: "DB Mongo Volume", id: "m4" } ]
+          ]
+          view    = "timeSeries"
+          region  = "us-east-1"
+          title   = "Database - MongoDB Volume"
         }
       }
     ]
