@@ -37,6 +37,22 @@ pipeline {
             }
         }
 
+        stage('Deploy Monitoring Stack') {
+            steps {
+                script {
+                    echo '--- Deploying Monitoring Stack ---'
+                    env.KUBECONFIG = '/var/lib/jenkins/.kube/config'
+                    
+                    // Deploy monitoring (idempotent - safe to run every time)
+                    sh 'kubectl apply -f k8s/monitoring/namespace.yaml'
+                    sh 'kubectl apply -f k8s/monitoring/prometheus-rbac.yaml'
+                    sh 'kubectl apply -f k8s/monitoring/node-exporter.yaml'
+                    sh 'kubectl apply -f k8s/monitoring/prometheus.yaml'
+                    sh 'kubectl apply -f k8s/monitoring/grafana.yaml'
+                }
+            }
+        }
+
         stage('Deploy to K3s') {
             steps {
                 script {
@@ -68,6 +84,27 @@ pipeline {
                     }
                 }
             }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    echo '--- Verifying Deployments ---'
+                    sh 'kubectl get pods -n monitoring'
+                    sh 'kubectl get pods -n default'
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Deployment successful!'
+            echo "Prometheus: http://<master-ip>:30090"
+            echo "Grafana: http://<master-ip>:30030 (admin/admin123)"
+        }
+        failure {
+            echo '❌ Deployment failed. Check logs above.'
         }
     }
 }

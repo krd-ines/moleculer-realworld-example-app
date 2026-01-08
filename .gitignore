@@ -6,3 +6,8 @@ stats.json
 yarn-error.log
 
 data/
+
+.terraform/
+*.terraform*
+*.tfstate*
+*.pem
