@@ -1,17 +1,14 @@
 pipeline {
     agent any
 
-
     triggers {
         pollSCM('*/2 * * * *')
     }
 
     environment {
-
+        // Credentials
         DOCKER_CREDS = credentials('docker-hub-creds')
-
         DOCKER_USER = 'mariaboukhelfa2025'
-
         IMAGE_NAME = "${DOCKER_USER}/moleculer-conduit:latest"
     }
 
@@ -27,10 +24,11 @@ pipeline {
                 script {
                     docker.withRegistry('', 'docker-hub-creds') {
                         echo "--- Building Docker Image: ${IMAGE_NAME} ---"
-
+                        // Build the image
                         def customImage = docker.build(IMAGE_NAME)
 
                         echo "--- Pushing to Docker Hub ---"
+                        // Push the image
                         customImage.push()
                     }
                 }
@@ -42,9 +40,14 @@ pipeline {
                 script {
                     echo '--- Deploying Monitoring Stack ---'
                     env.KUBECONFIG = '/var/lib/jenkins/.kube/config'
-                    
-                    // Deploy monitoring (idempotent - safe to run every time)
-                    sh 'kubectl apply -f k8s/monitoring/namespace.yaml'
+
+                    // --- FIX STARTS HERE ---
+                    // We ignore the broken .yaml file from the repo and create the namespace manually.
+                    // "|| true" ensures the build doesn't fail if the namespace already exists.
+                    sh 'kubectl create namespace monitoring || true'
+                    // -----------------------
+
+                    // Deploy the rest of the monitoring stack
                     sh 'kubectl apply -f k8s/monitoring/prometheus-rbac.yaml'
                     sh 'kubectl apply -f k8s/monitoring/node-exporter.yaml'
                     sh 'kubectl apply -f k8s/monitoring/prometheus.yaml'
@@ -68,18 +71,17 @@ pipeline {
                         'metrics-service'
                     ]
 
-
                     env.KUBECONFIG = '/var/lib/jenkins/.kube/config'
 
+                    // Apply configs and NATS messaging
                     sh 'kubectl apply -f k8s/config.yaml'
                     sh 'kubectl apply -f k8s/nats.yaml'
 
-
+                    // Deploy microservices
                     services.each { service ->
                         echo "--- Deploying ${service} ---"
                         sh "kubectl apply -f k8s/${service}.yaml"
-
-
+                        // Force restart to pull the new image we just built
                         sh "kubectl rollout restart deployment/${service}"
                     }
                 }
@@ -90,6 +92,7 @@ pipeline {
             steps {
                 script {
                     echo '--- Verifying Deployments ---'
+                    // Check if pods are running
                     sh 'kubectl get pods -n monitoring'
                     sh 'kubectl get pods -n default'
                 }
@@ -100,8 +103,9 @@ pipeline {
     post {
         success {
             echo '✅ Deployment successful!'
-            echo "Prometheus: http://<master-ip>:30090"
-            echo "Grafana: http://<master-ip>:30030 (admin/admin123)"
+            // Note: Replace <master-ip> with your actual public IP in the output below
+            echo "Prometheus is available at port 30090"
+            echo "Grafana is available at port 30030 (login: admin/admin123)"
         }
         failure {
             echo '❌ Deployment failed. Check logs above.'
