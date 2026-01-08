@@ -4,6 +4,8 @@ output "master_node_details" {
     ip          = aws_instance.master_node.public_ip
     ssh_login   = "ssh -i vockey.pem ubuntu@${aws_instance.master_node.public_ip}"
     jenkins_url = "http://${aws_instance.master_node.public_ip}:8080"
+    prometheus_url = "http://${aws_instance.master_node.public_ip}:30090"
+    grafana_url = "http://${aws_instance.master_node.public_ip}:30030"
   }
 }
 

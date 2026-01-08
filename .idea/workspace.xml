@@ -1,0 +1,385 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="468846f3-92de-4c99-9f1d-a2916da17a73" name="Changes" comment="working version but with cloud watch 50% work and new output" />
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+    <option name="UPDATE_TYPE" value="REBASE" />
+  </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;145695&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/krd-ines/moleculer-realworld-example-app.git&quot;,
+    &quot;accountId&quot;: &quot;cb9505d1-295b-4621-99ac-848db84b9c34&quot;
+  }
+}</component>
+  <component name="KubernetesApiPersistence">{}</component>
+  <component name="KubernetesApiProvider">{
+  &quot;isMigrated&quot;: true
+}</component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 6
+}</component>
+  <component name="ProjectId" id="37T5EdozkgGhzruUxrTPrDZP48M" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;KUBERNETES_SUPPRESS_CONFIG_CLUSTER_SUGGESTION&quot;: &quot;true&quot;,
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;SONARLINT_PRECOMMIT_ANALYSIS&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;aws-migration&quot;,
+    &quot;ignore.virus.scanning.warn.message&quot;: &quot;true&quot;,
+    &quot;kotlin-language-version-configured&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.lookFeel&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  }
+}</component>
+  <component name="RunManager">
+    <configuration default="true" type="JetRunConfigurationType">
+      <module name="moleculer-realworld-example-app" />
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+    <configuration default="true" type="KotlinStandaloneScriptRunConfigurationType">
+      <module name="moleculer-realworld-example-app" />
+      <option name="filePath" />
+      <method v="2" />
+    </configuration>
+    <configuration default="true" type="PythonConfigurationType" factoryName="Python">
+      <module name="moleculer-realworld-example-app" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="SCRIPT_NAME" value="" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration default="true" type="Python.FlaskServer">
+      <module name="moleculer-realworld-example-app" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="launchJavascriptDebuger" value="false" />
+      <method v="2" />
+    </configuration>
+    <configuration default="true" type="Tox" factoryName="Tox">
+      <module name="moleculer-realworld-example-app" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <method v="2" />
+    </configuration>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-jdk-9823dce3aa75-bf35d07a577b-intellij.indexing.shared.core-IU-252.28539.13" />
+        <option value="bundled-js-predefined-d6986cc7102b-a71380e98a7c-JavaScript-IU-252.28539.13" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="468846f3-92de-4c99-9f1d-a2916da17a73" name="Changes" comment="" />
+      <created>1766914111864</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1766914111864</updated>
+      <workItem from="1766914112942" duration="229000" />
+      <workItem from="1766914377963" duration="115000" />
+      <workItem from="1766914510655" duration="7107000" />
+      <workItem from="1766944218042" duration="4000" />
+      <workItem from="1767187774792" duration="10000" />
+      <workItem from="1767446065671" duration="932000" />
+      <workItem from="1767773765466" duration="8969000" />
+      <workItem from="1767796819626" duration="29603000" />
+      <workItem from="1767873124592" duration="30764000" />
+      <workItem from="1767905056409" duration="28000" />
+      <workItem from="1767905093301" duration="367000" />
+    </task>
+    <task id="LOCAL-00001" summary="with master node as NAT">
+      <option name="closed" value="true" />
+      <created>1766915125290</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1766915125290</updated>
+    </task>
+    <task id="LOCAL-00002" summary="feat: Migration to AWS Infrastructure with NAT Gateway and External DB">
+      <option name="closed" value="true" />
+      <created>1766917504425</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1766917504425</updated>
+    </task>
+    <task id="LOCAL-00003" summary="feat: Add Jenkins installation to Master Node user_data">
+      <option name="closed" value="true" />
+      <created>1766917829463</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1766917829463</updated>
+    </task>
+    <task id="LOCAL-00004" summary="feat: Add Jenkinsfile pipeline (first try)">
+      <option name="closed" value="true" />
+      <created>1766917995056</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1766917995056</updated>
+    </task>
+    <task id="LOCAL-00005" summary="feat: using config for the db instance ip address(part1)">
+      <option name="closed" value="true" />
+      <created>1766919735966</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1766919735966</updated>
+    </task>
+    <task id="LOCAL-00006" summary="feat: using 3 insatnces of t3.small instead of 6 of t3.micro">
+      <option name="closed" value="true" />
+      <created>1766921226803</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1766921226803</updated>
+    </task>
+    <task id="LOCAL-00007" summary="working downlaod script">
+      <option name="closed" value="true" />
+      <created>1767783881924</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1767783881925</updated>
+    </task>
+    <task id="LOCAL-00008" summary="with docker hub">
+      <option name="closed" value="true" />
+      <created>1767800929127</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1767800929127</updated>
+    </task>
+    <task id="LOCAL-00009" summary="with docker hub">
+      <option name="closed" value="true" />
+      <created>1767801053015</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1767801053015</updated>
+    </task>
+    <task id="LOCAL-00010" summary="with docker hub">
+      <option name="closed" value="true" />
+      <created>1767801095667</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1767801095667</updated>
+    </task>
+    <task id="LOCAL-00011" summary="with docker hub">
+      <option name="closed" value="true" />
+      <created>1767801259889</created>
+      <option name="number" value="00011" />
+      <option name="presentableId" value="LOCAL-00011" />
+      <option name="project" value="LOCAL" />
+      <updated>1767801259890</updated>
+    </task>
+    <task id="LOCAL-00012" summary="with docker hub secure">
+      <option name="closed" value="true" />
+      <created>1767801360221</created>
+      <option name="number" value="00012" />
+      <option name="presentableId" value="LOCAL-00012" />
+      <option name="project" value="LOCAL" />
+      <updated>1767801360221</updated>
+    </task>
+    <task id="LOCAL-00013" summary="with jenkins pipline">
+      <option name="closed" value="true" />
+      <created>1767806387864</created>
+      <option name="number" value="00013" />
+      <option name="presentableId" value="LOCAL-00013" />
+      <option name="project" value="LOCAL" />
+      <updated>1767806387864</updated>
+    </task>
+    <task id="LOCAL-00014" summary="with jenkins pipline right path">
+      <option name="closed" value="true" />
+      <created>1767806645720</created>
+      <option name="number" value="00014" />
+      <option name="presentableId" value="LOCAL-00014" />
+      <option name="project" value="LOCAL" />
+      <updated>1767806645720</updated>
+    </task>
+    <task id="LOCAL-00015" summary="better output">
+      <option name="closed" value="true" />
+      <created>1767811322830</created>
+      <option name="number" value="00015" />
+      <option name="presentableId" value="LOCAL-00015" />
+      <option name="project" value="LOCAL" />
+      <updated>1767811322830</updated>
+    </task>
+    <task id="LOCAL-00016" summary="change to nodeport">
+      <option name="closed" value="true" />
+      <created>1767813297061</created>
+      <option name="number" value="00016" />
+      <option name="presentableId" value="LOCAL-00016" />
+      <option name="project" value="LOCAL" />
+      <updated>1767813297061</updated>
+    </task>
+    <task id="LOCAL-00017" summary="with fix bd ip">
+      <option name="closed" value="true" />
+      <created>1767818842591</created>
+      <option name="number" value="00017" />
+      <option name="presentableId" value="LOCAL-00017" />
+      <option name="project" value="LOCAL" />
+      <updated>1767818842591</updated>
+    </task>
+    <task id="LOCAL-00018" summary="trying to fix connection">
+      <option name="closed" value="true" />
+      <created>1767826315083</created>
+      <option name="number" value="00018" />
+      <option name="presentableId" value="LOCAL-00018" />
+      <option name="project" value="LOCAL" />
+      <updated>1767826315083</updated>
+    </task>
+    <task id="LOCAL-00019" summary="trying to fix connection">
+      <option name="closed" value="true" />
+      <created>1767826324969</created>
+      <option name="number" value="00019" />
+      <option name="presentableId" value="LOCAL-00019" />
+      <option name="project" value="LOCAL" />
+      <updated>1767826324969</updated>
+    </task>
+    <task id="LOCAL-00020" summary="trying to fix connection">
+      <option name="closed" value="true" />
+      <created>1767827787722</created>
+      <option name="number" value="00020" />
+      <option name="presentableId" value="LOCAL-00020" />
+      <option name="project" value="LOCAL" />
+      <updated>1767827787722</updated>
+    </task>
+    <task id="LOCAL-00021" summary="working version but statless DB">
+      <option name="closed" value="true" />
+      <created>1767829477444</created>
+      <option name="number" value="00021" />
+      <option name="presentableId" value="LOCAL-00021" />
+      <option name="project" value="LOCAL" />
+      <updated>1767829477444</updated>
+    </task>
+    <task id="LOCAL-00022" summary="working version but statfull instances and auto first build">
+      <option name="closed" value="true" />
+      <created>1767900659925</created>
+      <option name="number" value="00022" />
+      <option name="presentableId" value="LOCAL-00022" />
+      <option name="project" value="LOCAL" />
+      <updated>1767900659925</updated>
+    </task>
+    <task id="LOCAL-00023" summary="working version but with cloud watch 50% work and new output">
+      <option name="closed" value="true" />
+      <created>1767904831554</created>
+      <option name="number" value="00023" />
+      <option name="presentableId" value="LOCAL-00023" />
+      <option name="project" value="LOCAL" />
+      <updated>1767904831554</updated>
+    </task>
+    <task id="LOCAL-00024" summary="working version but with cloud watch 50% work and new output">
+      <option name="closed" value="true" />
+      <created>1767905417409</created>
+      <option name="number" value="00024" />
+      <option name="presentableId" value="LOCAL-00024" />
+      <option name="project" value="LOCAL" />
+      <updated>1767905417409</updated>
+    </task>
+    <option name="localTasksCounter" value="25" />
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="with master node as NAT" />
+    <MESSAGE value="feat: Migration to AWS Infrastructure with NAT Gateway and External DB" />
+    <MESSAGE value="feat: Add Jenkins installation to Master Node user_data" />
+    <MESSAGE value="feat: Add Jenkinsfile pipeline (first try)" />
+    <MESSAGE value="feat: using config for the db instance ip address(part1)" />
+    <MESSAGE value="feat: using 3 insatnces of t3.small instead of 6 of t3.micro" />
+    <MESSAGE value="working downlaod script" />
+    <MESSAGE value="with docker hub" />
+    <MESSAGE value="with docker hub secure" />
+    <MESSAGE value="with jenkins pipline" />
+    <MESSAGE value="with jenkins pipline right path" />
+    <MESSAGE value="better output" />
+    <MESSAGE value="change to nodeport" />
+    <MESSAGE value="with fix bd ip" />
+    <MESSAGE value="trying to fix connection" />
+    <MESSAGE value="working version but statless DB" />
+    <MESSAGE value="working version but statfull instances and auto first build" />
+    <MESSAGE value="working version but with cloud watch 50% work and new output" />
+    <option name="LAST_COMMIT_MESSAGE" value="working version but with cloud watch 50% work and new output" />
+  </component>
+  <component name="XSLT-Support.FileAssociations.UIState">
+    <expand />
+    <select />
+  </component>
+</project>
