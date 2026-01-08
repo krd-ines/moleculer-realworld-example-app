@@ -1,4 +1,3 @@
-
 output "master_node_details" {
   description = "Access information for the Master Node"
   value = {
@@ -8,9 +7,9 @@ output "master_node_details" {
   }
 }
 
-output "application_access_instruction" {
-  description = "How to access your app"
-  value       = "Check 'kubectl get svc' for the port, then visit http://${aws_instance.master_node.public_ip}:<PORT>"
+output "application_url" {
+  description = "Direct link to the deployed application"
+  value       = "http://${aws_instance.master_node.public_ip}:32448/"
 }
 
 output "worker_nodes_private_ips" {
