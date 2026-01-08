@@ -6,6 +6,7 @@ provider "aws" {
   region = var.aws_region
 }
 
+
 # --- 1. Data Sources ---
 data "aws_ami" "ubuntu" {
   most_recent = true
