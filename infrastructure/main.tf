@@ -584,23 +584,6 @@ resource "aws_instance" "db_instance" {
     echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
     until ping -c 1 8.8.8.8 >/dev/null 2>&1; do sleep 5; done
 
-    echo "Checking internet connectivity..."
-    until ping -c 1 8.8.8.8 >/dev/null 2>&1; do
-      echo "Waiting for NAT connectivity via Master Node (10.0.1.10)..."
-      sleep 5
-    done
-    echo "Internet access confirmed!"
-
-    echo "--- [STEP 2] INSTALL MONGODB ---"
-    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-      echo "Waiting for apt lock..."
-      sleep 5
-    done
-
-    apt-get update
-    apt-get install -y mongodb
-
-    echo "--- [STEP 3] CONFIGURE BIND IP ---"
     while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
     apt-get update
     apt-get install -y mongodb
