@@ -704,78 +704,196 @@ resource "aws_route_table_association" "private_db_assoc" {
   route_table_id = aws_route_table.private_rt.id
 }
 
-# --- 7. MONITORING DASHBOARD (FIXED SYNTAX) ---
+# --- 7. MONITORING DASHBOARD ---
 resource "aws_cloudwatch_dashboard" "lab_monitor" {
   dashboard_name = "DevOps-Lab-Monitor-Auto"
-
   dashboard_body = jsonencode({
     widgets = [
       # --- ROW 1: MASTER NODE ---
       {
         type   = "metric"
-        x      = 0
-        y      = 0
-        width  = 12
-        height = 6
+        x      = 0, y = 0, width = 12, height = 6
         properties = {
-          # "SEARCH" finds the metric regardless of extra dimensions like ImageId or fstype
-          metrics = [
-            [ { expression: "SEARCH('{CWAgent,InstanceId} MetricName=\"mem_used_percent\" InstanceId=${aws_instance.master_node.id}', 'Average', 60)", label: "Master RAM %", id: "m1" } ]
-          ]
-          view    = "timeSeries"
-          region  = "us-east-1"
-          title   = "Master Node - RAM Usage"
+          metrics = [ [ { expression: "SEARCH('{CWAgent,InstanceId} MetricName=\"mem_used_percent\" InstanceId=${aws_instance.master_node.id}', 'Average', 60)", label: "Master RAM %", id: "m1" } ] ]
+          view = "timeSeries", region = "us-east-1", title = "Master Node - RAM Usage"
         }
       },
       {
         type   = "metric"
-        x      = 12
-        y      = 0
-        width  = 12
-        height = 6
+        x      = 12, y = 0, width = 12, height = 6
         properties = {
-          metrics = [
-            # We filter by InstanceId AND the specific path "/"
-            [ { expression: "SEARCH('{CWAgent,InstanceId,path} MetricName=\"disk_used_percent\" InstanceId=${aws_instance.master_node.id} path=\"/\"', 'Average', 60)", label: "Master Disk /", id: "m2" } ]
-          ]
-          view    = "timeSeries"
-          region  = "us-east-1"
-          title   = "Master Node - Disk Usage"
+          metrics = [ [ { expression: "SEARCH('{CWAgent,InstanceId,path} MetricName=\"disk_used_percent\" InstanceId=${aws_instance.master_node.id} path=\"/\"', 'Average', 60)", label: "Master Disk /", id: "m2" } ] ]
+          view = "timeSeries", region = "us-east-1", title = "Master Node - Disk Usage"
         }
       },
-
       # --- ROW 2: DB INSTANCE ---
       {
         type   = "metric"
-        x      = 0
-        y      = 6
-        width  = 12
-        height = 6
+        x      = 0, y = 6, width = 12, height = 6
         properties = {
-          metrics = [
-            [ { expression: "SEARCH('{CWAgent,InstanceId} MetricName=\"mem_used_percent\" InstanceId=${aws_instance.db_instance.id}', 'Average', 60)", label: "DB RAM %", id: "m3" } ]
-          ]
-          view    = "timeSeries"
-          region  = "us-east-1"
-          title   = "Database - RAM Usage"
+          metrics = [ [ { expression: "SEARCH('{CWAgent,InstanceId} MetricName=\"mem_used_percent\" InstanceId=${aws_instance.db_instance.id}', 'Average', 60)", label: "DB RAM %", id: "m3" } ] ]
+          view = "timeSeries", region = "us-east-1", title = "Database - RAM Usage"
         }
       },
       {
         type   = "metric"
-        x      = 12
-        y      = 6
-        width  = 12
-        height = 6
+        x      = 12, y = 6, width = 12, height = 6
         properties = {
-          metrics = [
-            # Specifically searching for the mongodb volume path
-            [ { expression: "SEARCH('{CWAgent,InstanceId,path} MetricName=\"disk_used_percent\" InstanceId=${aws_instance.db_instance.id} path=\"/var/lib/mongodb\"', 'Average', 60)", label: "DB Mongo Volume", id: "m4" } ]
-          ]
-          view    = "timeSeries"
-          region  = "us-east-1"
-          title   = "Database - MongoDB Volume"
+          metrics = [ [ { expression: "SEARCH('{CWAgent,InstanceId,path} MetricName=\"disk_used_percent\" InstanceId=${aws_instance.db_instance.id} path=\"/var/lib/mongodb\"', 'Average', 60)", label: "DB Mongo Volume", id: "m4" } ] ]
+          view = "timeSeries", region = "us-east-1", title = "Database - MongoDB Volume"
         }
       }
     ]
   })
+}
+
+# --- 8. GRAFANA SETUP ---
+# A. FIX PERMISSIONS: Attach CloudWatch Policy to the existing LabRole
+# This ensures ALL your instances (Master, DB, Grafana) have permission to Read/Write metrics.
+resource "aws_iam_role_policy_attachment" "lab_role_cloudwatch_fix" {
+  role       = "LabRole"
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+# B. SECURITY GROUP
+resource "aws_security_group" "grafana_sg" {
+  name        = "grafana-sg"
+  description = "Allow Grafana Access"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# C. GRAFANA SERVER
+resource "aws_instance" "grafana_server" {
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = "t2.micro"
+  subnet_id              = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.grafana_sg.id]
+  iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
+  key_name               = "vockey"
+
+  tags = {
+    Name = "Grafana-Dashboard"
+  }
+
+  # --- AUTOMATION SCRIPT ---
+  user_data = <<-EOF
+    #!/bin/bash
+    # 1. Install Grafana
+    apt-get update
+    apt-get install -y apt-transport-https software-properties-common wget
+    mkdir -p /etc/apt/keyrings/
+    wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | tee /etc/apt/keyrings/grafana.gpg > /dev/null
+    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | tee -a /etc/apt/sources.list.d/grafana.list
+    apt-get update
+    apt-get install -y grafana
+
+    # 2. Configure CloudWatch Data Source (AUTOMATIC CONNECTION)
+    mkdir -p /etc/grafana/provisioning/datasources
+    cat <<EOT > /etc/grafana/provisioning/datasources/cloudwatch.yaml
+    apiVersion: 1
+    datasources:
+      - name: CloudWatch
+        type: cloudwatch
+        isDefault: true
+        access: proxy
+        jsonData:
+          defaultRegion: us-east-1
+          authType: default
+    EOT
+
+    # 3. Configure Dashboard Provider
+    mkdir -p /etc/grafana/provisioning/dashboards
+    cat <<EOT > /etc/grafana/provisioning/dashboards/main.yaml
+    apiVersion: 1
+    providers:
+      - name: 'Lab Dashboards'
+        orgId: 1
+        folder: ''
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards
+    EOT
+
+    # 4. Create the Dashboard JSON File (AUTOMATIC GRAPHS)
+    mkdir -p /var/lib/grafana/dashboards
+    cat <<EOT > /var/lib/grafana/dashboards/lab_dashboard.json
+    {
+      "title": "DevOps Lab Monitor (Auto)",
+      "panels": [
+        {
+          "title": "Master Node - RAM Usage",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "region": "us-east-1",
+              "namespace": "CWAgent",
+              "metricName": "mem_used_percent",
+              "dimensions": { "InstanceId": "${aws_instance.master_node.id}" },
+              "stat": "Average",
+              "period": "60s",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "Master Node - Disk Usage (/)",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "region": "us-east-1",
+              "namespace": "CWAgent",
+              "metricName": "disk_used_percent",
+              "dimensions": { "InstanceId": "${aws_instance.master_node.id}", "path": "/" },
+              "stat": "Average",
+              "period": "60s",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "title": "Database - RAM Usage",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+          "targets": [
+            {
+              "region": "us-east-1",
+              "namespace": "CWAgent",
+              "metricName": "mem_used_percent",
+              "dimensions": { "InstanceId": "${aws_instance.db_instance.id}" },
+              "stat": "Average",
+              "period": "60s",
+              "refId": "C"
+            }
+          ]
+        }
+      ]
+    }
+    EOT
+
+    # 5. Start Grafana
+    systemctl daemon-reload
+    systemctl enable grafana-server
+    systemctl start grafana-server
+  EOF
 }
