@@ -165,6 +165,13 @@ resource "aws_security_group" "master_sg" {
     protocol    = "tcp"
     cidr_blocks = [var.web_access_cidr]
   }
+  ingress {
+    description     = "Allow Prometheus scraping"
+    from_port       = 9100
+    to_port         = 9100
+    protocol        = "tcp"
+    security_groups = [aws_security_group.grafana_sg.id]
+  }
   egress {
     from_port   = 0
     to_port     = 0
@@ -182,6 +189,13 @@ resource "aws_security_group" "services_sg" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = [var.vpc_cidr]
+  }
+  ingress {
+    description     = "Allow Prometheus scraping"
+    from_port       = 9100
+    to_port         = 9100
+    protocol        = "tcp"
+    security_groups = [aws_security_group.grafana_sg.id]
   }
   egress {
     from_port   = 0
@@ -206,6 +220,13 @@ resource "aws_security_group" "db_sg" {
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr]
+  }
+  ingress {
+    description     = "Allow Prometheus scraping"
+    from_port       = 9100
+    to_port         = 9100
+    protocol        = "tcp"
+    security_groups = [aws_security_group.grafana_sg.id]
   }
   egress {
     from_port   = 0
@@ -407,49 +428,29 @@ cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
 chown -R ubuntu:ubuntu /home/ubuntu/.kube
 chmod 600 /home/ubuntu/.kube/config
 
-echo "--- [STEP: CLOUDWATCH AGENT SETUP] ---"
-# 1. Install
-wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
-dpkg -i -E ./amazon-cloudwatch-agent.deb
+# Install Node Exporter
+cd /tmp
+wget https://github.com/prometheus/node_exporter/releases/download/v1.7.0/node_exporter-1.7.0.linux-amd64.tar.gz
+tar xvf node_exporter-1.7.0.linux-amd64.tar.gz
+sudo mv node_exporter-1.7.0.linux-amd64/node_exporter /usr/local/bin/
 
-# 2. Create directory and write the config (Clean version)
-mkdir -p /opt/aws/amazon-cloudwatch-agent/etc/
+# Create a Systemd service to keep it running
+sudo cat <<EOT > /etc/systemd/system/node_exporter.service
+[Unit]
+Description=Node Exporter
+After=network.target
 
-cat <<'JSON' > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
-{
-  "agent": {
-    "metrics_collection_interval": 60,
-    "run_as_user": "root"
-  },
-  "metrics": {
-    "append_dimensions": {
-      "InstanceId": "$${aws:InstanceId}"
-    },
-    "metrics_collected": {
-      "cpu": {
-        "measurement": ["cpu_usage_user"],
-        "totalcpu": true
-      },
-      "mem": {
-        "measurement": ["mem_used_percent"]
-      },
-      "disk": {
-        "measurement": ["disk_used_percent"],
-        "resources": ["/"],
-        "ignore_file_system_types": ["sysfs", "devtmpfs"],
-        "drop_device": true
-      }
-    }
-  }
-}
-JSON
+[Service]
+User=ubuntu
+ExecStart=/usr/local/bin/node_exporter
 
-# 3. Start the agent with the specific config file path
-/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-  -a fetch-config \
-  -m ec2 \
-  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json \
-  -s
+[Install]
+WantedBy=multi-user.target
+EOT
+
+sudo systemctl daemon-reload
+sudo systemctl enable node_exporter
+sudo systemctl start node_exporter
 
 EOF
 
@@ -521,43 +522,29 @@ until ping -c 1 8.8.8.8 >/dev/null 2>&1; do sleep 5; done
 # Join the cluster as a worker node
 curl -sfL https://get.k3s.io | K3S_URL=https://10.0.1.10:6443 K3S_TOKEN=mysecretpassword sh -
 
-echo "--- [STEP: CLOUDWATCH AGENT SETUP] ---"
-# 1. Download and Install
-wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
-dpkg -i -E ./amazon-cloudwatch-agent.deb
+# Install Node Exporter
+cd /tmp
+wget https://github.com/prometheus/node_exporter/releases/download/v1.7.0/node_exporter-1.7.0.linux-amd64.tar.gz
+tar xvf node_exporter-1.7.0.linux-amd64.tar.gz
+sudo mv node_exporter-1.7.0.linux-amd64/node_exporter /usr/local/bin/
 
-# 2. Write the config (Note the $$$ and the 'EOT' to protect the string)
-cat <<'EOT' > /opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json
-{
-  "metrics": {
-    "append_dimensions": {
-      "InstanceId": "$${aws:InstanceId}"
-    },
-    "metrics_collected": {
-      "cpu": {
-        "measurement": ["cpu_usage_user"],
-        "totalcpu": true
-      },
-      "mem": {
-        "measurement": ["mem_used_percent"]
-      },
-      "disk": {
-        "measurement": ["disk_used_percent"],
-        "resources": ["/"],
-        "ignore_file_system_types": ["sysfs", "devtmpfs"],
-        "drop_device": true
-      }
-    }
-  }
-}
+# Create a Systemd service to keep it running
+sudo cat <<EOT > /etc/systemd/system/node_exporter.service
+[Unit]
+Description=Node Exporter
+After=network.target
+
+[Service]
+User=ubuntu
+ExecStart=/usr/local/bin/node_exporter
+
+[Install]
+WantedBy=multi-user.target
 EOT
 
-# 3. Start the agent
-/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-  -a fetch-config \
-  -m ec2 \
-  -c file:/opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json \
-  -s
+sudo systemctl daemon-reload
+sudo systemctl enable node_exporter
+sudo systemctl start node_exporter
 EOF
 
   tags = { Name = "Service-Worker-${count.index + 1}" }
@@ -663,44 +650,29 @@ fi
 systemctl restart mongodb || systemctl restart mongod
 systemctl enable mongodb || systemctl enable mongod
 
-echo "--- [STEP: CLOUDWATCH AGENT SETUP] ---"
-# 1. Download and Install
-wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
-dpkg -i -E ./amazon-cloudwatch-agent.deb
+# Install Node Exporter
+cd /tmp
+wget https://github.com/prometheus/node_exporter/releases/download/v1.7.0/node_exporter-1.7.0.linux-amd64.tar.gz
+tar xvf node_exporter-1.7.0.linux-amd64.tar.gz
+sudo mv node_exporter-1.7.0.linux-amd64/node_exporter /usr/local/bin/
 
-# 2. Write the config
-# Note: Added your DB mount point to the "resources" array
-cat <<'EOT' > /opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json
-{
-  "metrics": {
-    "append_dimensions": {
-      "InstanceId": "$${aws:InstanceId}"
-    },
-    "metrics_collected": {
-      "cpu": {
-        "measurement": ["cpu_usage_user"],
-        "totalcpu": true
-      },
-      "mem": {
-        "measurement": ["mem_used_percent"]
-      },
-      "disk": {
-        "measurement": ["disk_used_percent"],
-        "resources": ["/"],
-        "ignore_file_system_types": ["sysfs", "devtmpfs"],
-        "drop_device": true
-      }
-    }
-  }
-}
+# Create a Systemd service to keep it running
+sudo cat <<EOT > /etc/systemd/system/node_exporter.service
+[Unit]
+Description=Node Exporter
+After=network.target
+
+[Service]
+User=ubuntu
+ExecStart=/usr/local/bin/node_exporter
+
+[Install]
+WantedBy=multi-user.target
 EOT
 
-# 3. Start the agent
-/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-  -a fetch-config \
-  -m ec2 \
-  -c file:/opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json \
-  -s
+sudo systemctl daemon-reload
+sudo systemctl enable node_exporter
+sudo systemctl start node_exporter
 
 EOF
 
@@ -756,234 +728,136 @@ resource "aws_route_table_association" "private_db_assoc" {
 }
 
 
-# --- 7. MONITORING DASHBOARD ---
-resource "aws_cloudwatch_dashboard" "lab_monitor" {
-  dashboard_name = "DevOps-Lab-Monitor-Dynamic"
-  dashboard_body = jsonencode({
-    widgets = [
-      # --- ROW 1: MASTER NODE ---
-      {
-        type   = "metric", x = 0, y = 0, width = 8, height = 6
-        properties = {
-          metrics = [
-            ["CWAgent", "cpu_usage_user", "InstanceId", aws_instance.master_node.id, "cpu", "cpu-total", { label: "Master CPU %" }]
-          ]
-          view = "timeSeries", region = var.aws_region, title = "Master - CPU"
-        }
-      },
-      {
-        type   = "metric", x = 8, y = 0, width = 8, height = 6
-        properties = {
-          metrics = [
-            ["CWAgent", "mem_used_percent", "InstanceId", aws_instance.master_node.id, { label: "Master RAM %" }]
-          ]
-          view = "timeSeries", region = var.aws_region, title = "Master - RAM"
-        }
-      },
-      {
-        type   = "metric", x = 16, y = 0, width = 8, height = 6
-        properties = {
-          metrics = [
-            # DYNAMIC: Only InstanceId and Path are used as dimensions
-            ["CWAgent", "disk_used_percent", "InstanceId", aws_instance.master_node.id, "path", "/", { label: "Master Root Disk %" }]
-          ]
-          view = "timeSeries", region = var.aws_region, title = "Master - Disk Usage"
-        }
-      },
 
-      # --- ROW 2: DATABASE INSTANCE ---
-      {
-        type   = "metric", x = 0, y = 6, width = 12, height = 6
-        properties = {
-          metrics = [
-            ["CWAgent", "cpu_usage_user", "InstanceId", aws_instance.db_instance.id, "cpu", "cpu-total", { label: "DB CPU %" }]
-          ]
-          view = "timeSeries", region = var.aws_region, title = "Database - CPU"
-        }
-      },
-      {
-        type   = "metric", x = 12, y = 6, width = 12, height = 6
-        properties = {
-          metrics = [
-            # DYNAMIC: Tracks the mount point directly
-            ["CWAgent", "disk_used_percent", "InstanceId", aws_instance.db_instance.id, "path", "/var/lib/mongodb", { label: "MongoDB Volume %" }]
-          ]
-          view = "timeSeries", region = var.aws_region, title = "Database - Storage Usage"
-        }
-      },
 
-      # --- ROW 3: APP WORKERS ---
-      {
-        type   = "metric", x = 0, y = 12, width = 24, height = 6
-        properties = {
-          metrics = [
-            for i in range(var.app_instance_count) :
-            ["CWAgent", "cpu_usage_user", "InstanceId", aws_instance.app_services[i].id, "cpu", "cpu-total", { label: "Worker-${i+1}" }]
-          ]
-          view = "timeSeries", region = var.aws_region, title = "All App Workers - CPU Usage"
-        }
-      }
-    ]
-  })
+# # --- 7. GRAFANA SETUP --
+#
+# B. SECURITY GROUP
+resource "aws_security_group" "grafana_sg" {
+  name   = "grafana-sg"
+  vpc_id = aws_vpc.main.id
+
+  # Grafana Web Interface
+  ingress {
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr] # Only you can access
+  }
+
+  # Prometheus Web Interface (Optional)
+  ingress {
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
+  }
+
+  # SSH for troubleshooting
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
-# # --- 8. GRAFANA SETUP --
-#
-# # B. SECURITY GROUP
-# resource "aws_security_group" "grafana_sg" {
-#   name        = "grafana-sg"
-#   description = "Allow Grafana Access"
-#   vpc_id      = aws_vpc.main.id
-#
-#   ingress {
-#     from_port   = 22
-#     to_port     = 22
-#     protocol    = "tcp"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
-#   ingress {
-#     from_port   = 3000
-#     to_port     = 3000
-#     protocol    = "tcp"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
-#   egress {
-#     from_port   = 0
-#     to_port     = 0
-#     protocol    = "-1"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
-# }
-#
-# # C. GRAFANA SERVER
-# resource "aws_instance" "grafana_server" {
-#   ami                    = data.aws_ami.ubuntu.id
-#   instance_type          = "t2.micro"
-#   subnet_id              = aws_subnet.public.id
-#   vpc_security_group_ids = [aws_security_group.grafana_sg.id]
-#   iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
-#   key_name               = "vockey"
-#
-#   tags = { Name = "Grafana-Dashboard" }
-#
-#   user_data = <<-EOF
-#     #!/bin/bash
-#     exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
-#
-#     # 1. Install Grafana
-#     apt-get update
-#     apt-get install -y apt-transport-https software-properties-common wget
-#     mkdir -p /etc/apt/keyrings/
-#     wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | tee /etc/apt/keyrings/grafana.gpg > /dev/null
-#     echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | tee -a /etc/apt/sources.list.d/grafana.list
-#     apt-get update
-#     apt-get install -y grafana
-#
-#     # 2. Configure CloudWatch Data Source
-#     mkdir -p /etc/grafana/provisioning/datasources
-#     cat <<EOT > /etc/grafana/provisioning/datasources/cloudwatch.yaml
-#     apiVersion: 1
-#     datasources:
-#       - name: CloudWatch
-#         type: cloudwatch
-#         isDefault: true
-#         jsonData:
-#           defaultRegion: us-east-1
-#           authType: default
-#     EOT
-#
-#     # 3. Configure Dashboard Provider
-#     mkdir -p /etc/grafana/provisioning/dashboards
-#     cat <<EOT > /etc/grafana/provisioning/dashboards/main.yaml
-#     apiVersion: 1
-#     providers:
-#       - name: 'Lab Dashboards'
-#         orgId: 1
-#         folder: ''
-#         type: file
-#         options:
-#           path: /var/lib/grafana/dashboards
-#     EOT
-#
-#     # 4. Create the Dashboard JSON File
-#     mkdir -p /var/lib/grafana/dashboards
-#     cat <<EOT > /var/lib/grafana/dashboards/lab_dashboard.json
-#     {
-#       "title": "DevOps Lab Monitor (Auto)",
-#       "schemaVersion": 36,
-#       "panels": [
-#         {
-#           "title": "Master Node - CPU Usage",
-#           "type": "timeseries",
-#           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-#           "targets": [
-#             {
-#               "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
-#               "region": "us-east-1",
-#               "namespace": "CWAgent",
-#               "metricName": "cpu_usage_user",
-#               "dimensions": { "InstanceId": "${aws_instance.master_node.id}" },
-#               "statistic": "Average",
-#               "refId": "A"
-#             }
-#           ]
-#         },
-#         {
-#           "title": "Master Node - RAM Usage",
-#           "type": "timeseries",
-#           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-#           "targets": [
-#             {
-#               "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
-#               "region": "us-east-1",
-#               "namespace": "CWAgent",
-#               "metricName": "mem_used_percent",
-#               "dimensions": { "InstanceId": "${aws_instance.master_node.id}" },
-#               "statistic": "Average",
-#               "refId": "B"
-#             }
-#           ]
-#         },
-#         {
-#           "title": "Database - CPU Usage",
-#           "type": "timeseries",
-#           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-#           "targets": [
-#             {
-#               "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
-#               "region": "us-east-1",
-#               "namespace": "CWAgent",
-#               "metricName": "cpu_usage_user",
-#               "dimensions": { "InstanceId": "${aws_instance.db_instance.id}" },
-#               "statistic": "Average",
-#               "refId": "C"
-#             }
-#           ]
-#         },
-#         {
-#           "title": "Database - MongoDB Disk Usage",
-#           "type": "timeseries",
-#           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-#           "targets": [
-#             {
-#               "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
-#               "region": "us-east-1",
-#               "namespace": "CWAgent",
-#               "metricName": "disk_used_percent",
-#               "dimensions": { "InstanceId": "${aws_instance.db_instance.id}", "path": "/var/lib/mongodb" },
-#               "statistic": "Average",
-#               "refId": "D"
-#             }
-#           ]
-#         }
-#       ]
-#     }
-#     EOT
-#
-#     # 5. Set Permissions and Start
-#     chown -R grafana:grafana /var/lib/grafana/dashboards
-#     systemctl daemon-reload
-#     systemctl enable grafana-server
-#     systemctl start grafana-server
-#   EOF
-# }
+# C. GRAFANA SERVER
+
+resource "aws_instance" "grafana_server" {
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = "t2.micro"
+  subnet_id              = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.grafana_sg.id]
+  iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
+  key_name               = "vockey"
+
+  depends_on = [aws_instance.master_node, aws_instance.db_instance, aws_instance.app_services]
+
+  # This adds the name to the EC2 console
+  tags = {
+    Name = "Grafana-Monitoring-Server"
+  }
+
+  user_data = <<EOF
+#!/bin/bash
+exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+
+# 1. Add Grafana Repository
+apt-get update -y
+apt-get install -y apt-transport-https software-properties-common wget
+mkdir -p /etc/apt/keyrings/
+wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | tee /etc/apt/keyrings/grafana.gpg > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | tee /etc/apt/sources.list.d/grafana.list
+
+# 2. Update and Install
+apt-get update -y
+apt-get install -y prometheus grafana
+
+# 3. (REMOVED) Login will now behave normally and prompt for password change
+
+# 4. Prepare Prometheus Config
+mkdir -p /etc/prometheus
+cat <<EOT > /etc/prometheus/prometheus.yml
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'nodes'
+    static_configs:
+      - targets:
+          - '${aws_instance.master_node.private_ip}:9100'
+          - '${aws_instance.db_instance.private_ip}:9100'
+EOT
+
+# 5. Add Workers to Prometheus
+WORKER_LIST="${join(" ", aws_instance.app_services[*].private_ip)}"
+for ip in $WORKER_LIST; do
+  echo "          - '$ip:9100'" >> /etc/prometheus/prometheus.yml
+done
+
+# 6. Configure Grafana Data Source
+mkdir -p /etc/grafana/provisioning/datasources
+cat <<EOT > /etc/grafana/provisioning/datasources/prometheus.yaml
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    url: http://localhost:9090
+    isDefault: true
+EOT
+
+# 7. Configure Grafana Dashboards
+mkdir -p /var/lib/grafana/dashboards
+wget -q https://grafana.com/api/dashboards/1860/revisions/37/download -O /var/lib/grafana/dashboards/node-exporter.json
+
+mkdir -p /etc/grafana/provisioning/dashboards
+cat <<EOT > /etc/grafana/provisioning/dashboards/all.yaml
+apiVersion: 1
+providers:
+  - name: 'default'
+    orgId: 1
+    folder: ''
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
+EOT
+
+# 8. Permissions & Final Start
+chown -R prometheus:prometheus /etc/prometheus /var/lib/prometheus
+chown -R grafana:grafana /etc/grafana /var/lib/grafana
+
+systemctl daemon-reload
+systemctl enable prometheus
+systemctl restart prometheus
+systemctl enable grafana-server
+systemctl restart grafana-server
+EOF
+}
