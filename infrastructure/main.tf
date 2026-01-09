@@ -218,6 +218,7 @@ resource "aws_security_group" "db_sg" {
 # --- 5. Instances ---
 
 # --- MASTER NODE ---
+#tail -f /var/log/user-data.log
 resource "aws_instance" "master_node" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.master_instance_type
@@ -405,47 +406,50 @@ cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
 chown -R ubuntu:ubuntu /home/ubuntu/.kube
 chmod 600 /home/ubuntu/.kube/config
 
-  # --- CLOUDWATCH AGENT SETUP (Corrected) ---
+echo "--- [STEP: CLOUDWATCH AGENT SETUP] ---"
+# 1. Install
+wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+dpkg -i -E ./amazon-cloudwatch-agent.deb
 
-  # 1. Download the Agent
-  wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
-  dpkg -i -E ./amazon-cloudwatch-agent.deb
+# 2. Create directory and write the config (Clean version)
+mkdir -p /opt/aws/amazon-cloudwatch-agent/etc/
 
-  # 2. Create the Configuration File (Crucial Step!)
-  cat <<EOT >> /opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json
-  {
-    "agent": {
-      "metrics_collection_interval": 60,
-      "run_as_user": "root"
+cat <<JSON > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+{
+  "agent": {
+    "metrics_collection_interval": 60,
+    "run_as_user": "root"
+  },
+  "metrics": {
+    "append_dimensions": {
+      "InstanceId": "$${aws:InstanceId}"
     },
-    "metrics": {
-      "metrics_collected": {
-        "disk": {
-          "measurement": [
-            "used_percent"
-          ],
-          "metrics_collection_interval": 60,
-          "resources": [
-            "/"
-          ]
-        },
-        "mem": {
-          "measurement": [
-            "mem_used_percent"
-          ],
-          "metrics_collection_interval": 60
-        }
+    "metrics_collected": {
+      "cpu": {
+        "measurement": ["cpu_usage_user"],
+        "totalcpu": true
+      },
+      "mem": {
+        "measurement": ["mem_used_percent"]
+      },
+      "disk": {
+        "measurement": ["disk_used_percent"],
+        "resources": ["/"]
       }
     }
   }
-EOT
-  # 3. Start the Agent using that file
-  /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-    -a fetch-config \
-    -m ec2 \
-    -c file:/opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json \
-    -s
+}
+JSON
+
+# 3. Start the agent with the specific config file path
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config \
+  -m ec2 \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json \
+  -s
+
 EOF
+
   tags = { Name = "Master-Node" }
 }
 
@@ -473,76 +477,77 @@ resource "aws_instance" "app_services" {
   depends_on             = [aws_instance.master_node]
 
   user_data = <<-EOF
-    #!/bin/bash
-    exec > /var/log/user-data.log 2>&1
+#!/bin/bash
+# Redirect output to log file
+exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
-    echo "--- [STEP 0] SETUP PERSISTENT EBS VOLUME ---"
-    MOUNT_POINT="/var/lib/rancher"
-    echo "Waiting for data volume..."
-    while true; do
-      DEVICE_NAME=$(ls -1 /dev/nvme[1-9]n1 2>/dev/null | head -n 1)
-      if [ ! -z "$DEVICE_NAME" ]; then
-        echo "Found available volume: $DEVICE_NAME"
-        break
-      fi
-      sleep 5
-    done
-    if ! blkid $DEVICE_NAME; then
-      mkfs.ext4 $DEVICE_NAME
-    fi
-    mkdir -p $MOUNT_POINT
-    mount $DEVICE_NAME $MOUNT_POINT
-    UUID=$(blkid -s UUID -o value $DEVICE_NAME)
-    echo "UUID=$UUID $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
+echo "--- [STEP 0] SETUP PERSISTENT EBS VOLUME ---"
+MOUNT_POINT="/var/lib/rancher"
 
-    echo "--- [STEP 1] NETWORK ---"
-    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-    until ping -c 1 8.8.8.8 >/dev/null 2>&1; do sleep 5; done
+# Find any disk that isn't the root OS disk
+DEVICE_NAME=""
+for i in {1..20}; do
+  POTENTIAL=$(lsblk -rno NAME | grep -vE "nvme0n1|sda|loop" | head -n 1)
+  if [ ! -z "$POTENTIAL" ]; then
+    DEVICE_NAME="/dev/$POTENTIAL"
+    break
+  fi
+  echo "Waiting for data volume... ($i)"
+  sleep 5
+done
 
-    echo "--- [STEP 2] K3S WORKER ---"
-    curl -sfL https://get.k3s.io | K3S_URL=https://10.0.1.10:${var.k8s_port} K3S_TOKEN=mysecretpassword sh -
+if [ ! -z "$DEVICE_NAME" ]; then
+  if ! blkid $DEVICE_NAME; then
+    mkfs.ext4 $DEVICE_NAME
+  fi
+  mkdir -p $MOUNT_POINT
+  mount $DEVICE_NAME $MOUNT_POINT
+  UUID=$(blkid -s UUID -o value $DEVICE_NAME)
+  echo "UUID=$UUID $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
+fi
 
-    echo "--- [STEP 3] INSTALL CLOUDWATCH AGENT (CORRECTED) ---"
-    wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
-    dpkg -i -E ./amazon-cloudwatch-agent.deb
+echo "--- [STEP 1] NETWORK & K3S WORKER ---"
+until ping -c 1 8.8.8.8 >/dev/null 2>&1; do sleep 5; done
 
-    # Create config file (Monitoring '/' and the K3s volume '/var/lib/rancher')
-    cat <<EOT >> /opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json
-    {
-      "agent": {
-        "metrics_collection_interval": 60,
-        "run_as_user": "root"
+# Join the cluster as a worker node
+curl -sfL https://get.k3s.io | K3S_URL=https://10.0.1.10:6443 K3S_TOKEN=mysecretpassword sh -
+
+echo "--- [STEP: CLOUDWATCH AGENT SETUP] ---"
+# 1. Download and Install
+wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+dpkg -i -E ./amazon-cloudwatch-agent.deb
+
+# 2. Write the config (Note the $$$ and the 'EOT' to protect the string)
+cat <<'EOT' > /opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json
+{
+  "metrics": {
+    "append_dimensions": {
+      "InstanceId": "$${aws:InstanceId}"
+    },
+    "metrics_collected": {
+      "cpu": {
+        "measurement": ["cpu_usage_user"],
+        "totalcpu": true
       },
-      "metrics": {
-        "metrics_collected": {
-          "disk": {
-            "measurement": [
-              "used_percent"
-            ],
-            "metrics_collection_interval": 60,
-            "resources": [
-              "/",
-              "/var/lib/rancher"
-            ]
-          },
-          "mem": {
-            "measurement": [
-              "mem_used_percent"
-            ],
-            "metrics_collection_interval": 60
-          }
-        }
+      "mem": {
+        "measurement": ["mem_used_percent"]
+      },
+      "disk": {
+        "measurement": ["disk_used_percent"],
+        "resources": ["/", "/var/lib/rancher"]
       }
     }
+  }
+}
 EOT
 
-    # Start the agent using the correct file path
-    /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-      -a fetch-config \
-      -m ec2 \
-      -c file:/opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json \
-      -s
-  EOF
+# 3. Start the agent
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config \
+  -m ec2 \
+  -c file:/opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json \
+  -s
+EOF
 
   tags = { Name = "Service-Worker-${count.index + 1}" }
 }
@@ -562,6 +567,8 @@ resource "aws_volume_attachment" "worker_att" {
 }
 
 # --- DATABASE INSTANCE ---
+# chmod 400 ~/vockey.pem
+#ssh -i vockey.pem ubuntu@10.0.3.100
 resource "aws_instance" "db_instance" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.db_instance_type
@@ -570,88 +577,118 @@ resource "aws_instance" "db_instance" {
   iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.db_sg.id]
   key_name               = "vockey"
+
+  # Ensure the Master Node is ready first so logs can flow
   depends_on             = [aws_instance.master_node]
 
   user_data = <<-EOF
-    #!/bin/bash
-    exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+#!/bin/bash
+# Redirect all output to our custom log file
+exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
-    echo "--- [STEP 0] SETUP PERSISTENT EBS VOLUME ---"
-    MOUNT_POINT="/var/lib/mongodb"
-    echo "Waiting for data volume..."
-    while true; do
-      DEVICE_NAME=$(ls -1 /dev/nvme[1-9]n1 2>/dev/null | head -n 1)
-      if [ ! -z "$DEVICE_NAME" ]; then
-        echo "Found available volume: $DEVICE_NAME"
-        break
-      fi
-      sleep 5
-    done
-    if ! blkid $DEVICE_NAME; then
-      mkfs.ext4 $DEVICE_NAME
-    fi
-    mkdir -p $MOUNT_POINT
-    mount $DEVICE_NAME $MOUNT_POINT
-    UUID=$(blkid -s UUID -o value $DEVICE_NAME)
-    echo "UUID=$UUID $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
+echo "--- [STEP 0] SETUP PERSISTENT EBS VOLUME ---"
+MOUNT_POINT="/var/lib/mongodb"
 
-    echo "--- [STEP 1] INSTALL MONGO ---"
-    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-    until ping -c 1 8.8.8.8 >/dev/null 2>&1; do sleep 5; done
-    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
-    apt-get update
-    apt-get install -y mongodb
-    chown -R mongodb:mongodb /var/lib/mongodb
+# Robust detection for both old (/dev/sdh) and new (/dev/nvme) naming schemes
+# We wait up to 2 minutes for AWS to attach the volume
+MAX_RETRIES=24
+COUNT=0
+DEVICE_NAME=""
 
-    echo "--- [STEP 2] CONFIG ---"
-    if [ -f /etc/mongodb.conf ]; then
-        sed -i 's/bind_ip = 127.0.0.1/bind_ip = 0.0.0.0/g' /etc/mongodb.conf
-    fi
-    systemctl restart mongodb
-    systemctl enable mongodb
+while [ $COUNT -lt $MAX_RETRIES ]; do
+  # Find any disk that isn't the root OS disk (nvme0n1 or sda)
+  POTENTIAL_DISK=$(lsblk -rno NAME | grep -vE "nvme0n1|sda|loop" | head -n 1)
 
-    echo "--- [STEP 3] INSTALL CLOUDWATCH AGENT (CORRECTED) ---"
-    wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
-    dpkg -i -E ./amazon-cloudwatch-agent.deb
+  if [ ! -z "$POTENTIAL_DISK" ]; then
+    DEVICE_NAME="/dev/$POTENTIAL_DISK"
+    echo "Found volume at: $DEVICE_NAME"
+    break
+  fi
 
-    # Create the config file with explicit Disk and Memory settings
-    # Note: We added "/var/lib/mongodb" to the resources list so you can monitor the DB volume!
-    cat <<EOT >> /opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json
-    {
-      "agent": {
-        "metrics_collection_interval": 60,
-        "run_as_user": "root"
+  echo "Waiting for EBS volume to attach... ($COUNT/24)"
+  sleep 5
+  COUNT=$((COUNT+1))
+done
+
+if [ -z "$DEVICE_NAME" ]; then
+  echo "ERROR: Volume not found. Falling back to root partition (DANGEROUS for data)."
+else
+  # Format if it doesn't have a filesystem
+  if ! blkid $DEVICE_NAME; then
+    echo "Formatting $DEVICE_NAME with ext4..."
+    mkfs.ext4 $DEVICE_NAME
+  fi
+
+  mkdir -p $MOUNT_POINT
+  mount $DEVICE_NAME $MOUNT_POINT
+
+  # Persist mount on reboot
+  UUID=$(blkid -s UUID -o value $DEVICE_NAME)
+  echo "UUID=$UUID $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
+fi
+
+echo "--- [STEP 1] INSTALL MONGODB ---"
+apt-get update
+apt-get install -y mongodb
+chown -R mongodb:mongodb $MOUNT_POINT
+
+echo "--- [STEP 2] CONFIGURE NETWORK ACCESS ---"
+# Check both possible config filenames in Ubuntu
+CONF_FILE=""
+[ -f /etc/mongodb.conf ] && CONF_FILE="/etc/mongodb.conf"
+[ -f /etc/mongod.conf ] && CONF_FILE="/etc/mongod.conf"
+
+if [ ! -z "$CONF_FILE" ]; then
+    echo "Updating $CONF_FILE to listen on 0.0.0.0"
+    # Match both standard and YAML formats
+    sed -i 's/bind_ip = 127.0.0.1/bind_ip = 0.0.0.0/g' $CONF_FILE
+    sed -i 's/bindIp: 127.0.0.1/bindIp: 0.0.0.0/g' $CONF_FILE
+fi
+
+systemctl restart mongodb || systemctl restart mongod
+systemctl enable mongodb || systemctl enable mongod
+
+echo "--- [STEP: CLOUDWATCH AGENT SETUP] ---"
+# 1. Download and Install
+wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+dpkg -i -E ./amazon-cloudwatch-agent.deb
+
+# 2. Write the config
+# Note: Added your DB mount point to the "resources" array
+cat <<'EOT' > /opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json
+{
+  "metrics": {
+    "append_dimensions": {
+      "InstanceId": "$${aws:InstanceId}"
+    },
+    "metrics_collected": {
+      "cpu": {
+        "measurement": ["cpu_usage_user"],
+        "totalcpu": true
       },
-      "metrics": {
-        "metrics_collected": {
-          "disk": {
-            "measurement": [
-              "used_percent"
-            ],
-            "metrics_collection_interval": 60,
-            "resources": [
-              "/",
-              "/var/lib/mongodb"
-            ]
-          },
-          "mem": {
-            "measurement": [
-              "mem_used_percent"
-            ],
-            "metrics_collection_interval": 60
-          }
-        }
+      "mem": {
+        "measurement": ["mem_used_percent"]
+      },
+      "disk": {
+        "measurement": ["disk_used_percent"],
+        "resources": [
+            "/",
+            "/var/lib/mongodb"
+        ]
       }
     }
+  }
+}
 EOT
 
-    # Start the agent using the correct file path
-    /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
-      -a fetch-config \
-      -m ec2 \
-      -c file:/opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json \
-      -s
-  EOF
+# 3. Start the agent
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config \
+  -m ec2 \
+  -c file:/opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json \
+  -s
+
+EOF
 
   tags = { Name = "DB-Instance" }
 }
@@ -704,43 +741,76 @@ resource "aws_route_table_association" "private_db_assoc" {
   route_table_id = aws_route_table.private_rt.id
 }
 
+
 # --- 7. MONITORING DASHBOARD ---
 resource "aws_cloudwatch_dashboard" "lab_monitor" {
-  dashboard_name = "DevOps-Lab-Monitor-Auto"
+  dashboard_name = "DevOps-Lab-Monitor-Final"
   dashboard_body = jsonencode({
     widgets = [
       # --- ROW 1: MASTER NODE ---
       {
-        type   = "metric"
-        x      = 0, y = 0, width = 12, height = 6
+        type   = "metric", x = 0, y = 0, width = 8, height = 6
         properties = {
-          metrics = [ [ { expression: "SEARCH('{CWAgent,InstanceId} MetricName=\"mem_used_percent\" InstanceId=${aws_instance.master_node.id}', 'Average', 60)", label: "Master RAM %", id: "m1" } ] ]
-          view = "timeSeries", region = "us-east-1", title = "Master Node - RAM Usage"
+          metrics = [
+            # Note: CPU requires "cpu" and "InstanceId" dimensions
+            ["CWAgent", "cpu_usage_user", "InstanceId", aws_instance.master_node.id, "cpu", "cpu-total", { label: "Master CPU %" }]
+          ]
+          view = "timeSeries", region = var.aws_region, title = "Master - CPU Performance"
         }
       },
       {
-        type   = "metric"
-        x      = 12, y = 0, width = 12, height = 6
+        type   = "metric", x = 8, y = 0, width = 8, height = 6
         properties = {
-          metrics = [ [ { expression: "SEARCH('{CWAgent,InstanceId,path} MetricName=\"disk_used_percent\" InstanceId=${aws_instance.master_node.id} path=\"/\"', 'Average', 60)", label: "Master Disk /", id: "m2" } ] ]
-          view = "timeSeries", region = "us-east-1", title = "Master Node - Disk Usage"
-        }
-      },
-      # --- ROW 2: DB INSTANCE ---
-      {
-        type   = "metric"
-        x      = 0, y = 6, width = 12, height = 6
-        properties = {
-          metrics = [ [ { expression: "SEARCH('{CWAgent,InstanceId} MetricName=\"mem_used_percent\" InstanceId=${aws_instance.db_instance.id}', 'Average', 60)", label: "DB RAM %", id: "m3" } ] ]
-          view = "timeSeries", region = "us-east-1", title = "Database - RAM Usage"
+          metrics = [
+            # Memory usually only needs InstanceId
+            ["CWAgent", "mem_used_percent", "InstanceId", aws_instance.master_node.id, { label: "Master RAM %" }]
+          ]
+          view = "timeSeries", region = var.aws_region, title = "Master - RAM Usage"
         }
       },
       {
-        type   = "metric"
-        x      = 12, y = 6, width = 12, height = 6
+        type   = "metric", x = 16, y = 0, width = 8, height = 6
         properties = {
-          metrics = [ [ { expression: "SEARCH('{CWAgent,InstanceId,path} MetricName=\"disk_used_percent\" InstanceId=${aws_instance.db_instance.id} path=\"/var/lib/mongodb\"', 'Average', 60)", label: "DB Mongo Volume", id: "m4" } ] ]
-          view = "timeSeries", region = "us-east-1", title = "Database - MongoDB Volume"
+          metrics = [
+            # Disk is tricky: It needs InstanceId, device, fstype, and path.
+            # On Ubuntu/AWS, the root is usually nvme0n1p1 or xvda1.
+            # If data doesn't show, check "All Metrics" to see your specific device name.
+            ["CWAgent", "disk_used_percent", "InstanceId", aws_instance.master_node.id, "device", "nvme0n1p1", "fstype", "ext4", "path", "/", { label: "Master Disk /" }]
+          ]
+          view = "timeSeries", region = var.aws_region, title = "Master - Disk Usage"
+        }
+      },
+
+      # --- ROW 2: DATABASE INSTANCE ---
+      {
+        type   = "metric", x = 0, y = 6, width = 12, height = 6
+        properties = {
+          metrics = [
+            ["CWAgent", "cpu_usage_user", "InstanceId", aws_instance.db_instance.id, "cpu", "cpu-total", { label: "DB CPU %" }]
+          ]
+          view = "timeSeries", region = var.aws_region, title = "Database - CPU"
+        }
+      },
+      {
+        type   = "metric", x = 12, y = 6, width = 12, height = 6
+        properties = {
+          metrics = [
+            # Mapping the specific MongoDB volume you mounted
+            ["CWAgent", "disk_used_percent", "InstanceId", aws_instance.db_instance.id, "path", "/var/lib/mongodb", "device", "nvme1n1", "fstype", "ext4", { label: "MongoDB Storage %" }]
+          ]
+          view = "timeSeries", region = var.aws_region, title = "Database - Disk Usage"
+        }
+      },
+
+      # --- ROW 3: APP WORKERS ---
+      {
+        type   = "metric", x = 0, y = 12, width = 24, height = 6
+        properties = {
+          metrics = [
+            for i in range(var.app_instance_count) :
+            ["CWAgent", "cpu_usage_user", "InstanceId", aws_instance.app_services[i].id, "cpu", "cpu-total", { label: "Worker-${i+1}" }]
+          ]
+          view = "timeSeries", region = var.aws_region, title = "All App Workers - CPU Usage"
         }
       }
     ]
@@ -790,13 +860,12 @@ resource "aws_instance" "grafana_server" {
   iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
   key_name               = "vockey"
 
-  tags = {
-    Name = "Grafana-Dashboard"
-  }
+  tags = { Name = "Grafana-Dashboard" }
 
-  # --- AUTOMATION SCRIPT ---
   user_data = <<-EOF
     #!/bin/bash
+    exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+
     # 1. Install Grafana
     apt-get update
     apt-get install -y apt-transport-https software-properties-common wget
@@ -806,7 +875,7 @@ resource "aws_instance" "grafana_server" {
     apt-get update
     apt-get install -y grafana
 
-    # 2. Configure CloudWatch Data Source (AUTOMATIC CONNECTION)
+    # 2. Configure CloudWatch Data Source
     mkdir -p /etc/grafana/provisioning/datasources
     cat <<EOT > /etc/grafana/provisioning/datasources/cloudwatch.yaml
     apiVersion: 1
@@ -814,7 +883,6 @@ resource "aws_instance" "grafana_server" {
       - name: CloudWatch
         type: cloudwatch
         isDefault: true
-        access: proxy
         jsonData:
           defaultRegion: us-east-1
           authType: default
@@ -833,57 +901,74 @@ resource "aws_instance" "grafana_server" {
           path: /var/lib/grafana/dashboards
     EOT
 
-    # 4. Create the Dashboard JSON File (AUTOMATIC GRAPHS)
+    # 4. Create the Dashboard JSON File
     mkdir -p /var/lib/grafana/dashboards
     cat <<EOT > /var/lib/grafana/dashboards/lab_dashboard.json
     {
       "title": "DevOps Lab Monitor (Auto)",
+      "schemaVersion": 36,
       "panels": [
         {
-          "title": "Master Node - RAM Usage",
+          "title": "Master Node - CPU Usage",
           "type": "timeseries",
-          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
           "targets": [
             {
+              "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
               "region": "us-east-1",
               "namespace": "CWAgent",
-              "metricName": "mem_used_percent",
+              "metricName": "cpu_usage_user",
               "dimensions": { "InstanceId": "${aws_instance.master_node.id}" },
-              "stat": "Average",
-              "period": "60s",
+              "statistic": "Average",
               "refId": "A"
             }
           ]
         },
         {
-          "title": "Master Node - Disk Usage (/)",
+          "title": "Master Node - RAM Usage",
           "type": "timeseries",
-          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
           "targets": [
             {
+              "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
               "region": "us-east-1",
               "namespace": "CWAgent",
-              "metricName": "disk_used_percent",
-              "dimensions": { "InstanceId": "${aws_instance.master_node.id}", "path": "/" },
-              "stat": "Average",
-              "period": "60s",
+              "metricName": "mem_used_percent",
+              "dimensions": { "InstanceId": "${aws_instance.master_node.id}" },
+              "statistic": "Average",
               "refId": "B"
             }
           ]
         },
         {
-          "title": "Database - RAM Usage",
+          "title": "Database - CPU Usage",
           "type": "timeseries",
-          "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
           "targets": [
             {
+              "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
               "region": "us-east-1",
               "namespace": "CWAgent",
-              "metricName": "mem_used_percent",
+              "metricName": "cpu_usage_user",
               "dimensions": { "InstanceId": "${aws_instance.db_instance.id}" },
-              "stat": "Average",
-              "period": "60s",
+              "statistic": "Average",
               "refId": "C"
+            }
+          ]
+        },
+        {
+          "title": "Database - MongoDB Disk Usage",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            {
+              "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
+              "region": "us-east-1",
+              "namespace": "CWAgent",
+              "metricName": "disk_used_percent",
+              "dimensions": { "InstanceId": "${aws_instance.db_instance.id}", "path": "/var/lib/mongodb" },
+              "statistic": "Average",
+              "refId": "D"
             }
           ]
         }
@@ -891,7 +976,8 @@ resource "aws_instance" "grafana_server" {
     }
     EOT
 
-    # 5. Start Grafana
+    # 5. Set Permissions and Start
+    chown -R grafana:grafana /var/lib/grafana/dashboards
     systemctl daemon-reload
     systemctl enable grafana-server
     systemctl start grafana-server
