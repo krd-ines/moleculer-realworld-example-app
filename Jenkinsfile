@@ -1,4 +1,3 @@
-// app jenkines file hello
 pipeline {
     agent any
 
@@ -11,6 +10,7 @@ pipeline {
         DOCKER_CREDS = credentials('docker-hub-creds')
         DOCKER_USER = 'mariaboukhelfa2025'
         IMAGE_NAME = "${DOCKER_USER}/moleculer-conduit:latest"
+        KUBECONFIG = '/var/lib/jenkins/.kube/config'
     }
 
     stages {
@@ -25,37 +25,17 @@ pipeline {
                 script {
                     docker.withRegistry('', 'docker-hub-creds') {
                         echo "--- Building Docker Image: ${IMAGE_NAME} ---"
-                        // Build the image
                         def customImage = docker.build(IMAGE_NAME)
 
                         echo "--- Pushing to Docker Hub ---"
-                        // Push the image
                         customImage.push()
                     }
                 }
             }
         }
 
-        stage('Deploy Monitoring Stack') {
-            steps {
-                script {
-                    echo '--- Deploying Monitoring Stack ---'
-                    env.KUBECONFIG = '/var/lib/jenkins/.kube/config'
-
-                    // --- FIX STARTS HERE ---
-                    // We ignore the broken .yaml file from the repo and create the namespace manually.
-                    // "|| true" ensures the build doesn't fail if the namespace already exists.
-                    sh 'kubectl create namespace monitoring || true'
-                    // -----------------------
-
-                    // Deploy the rest of the monitoring stack
-                    sh 'kubectl apply -f k8s/monitoring/prometheus-rbac.yaml'
-                    sh 'kubectl apply -f k8s/monitoring/node-exporter.yaml'
-                    sh 'kubectl apply -f k8s/monitoring/prometheus.yaml'
-                    sh 'kubectl apply -f k8s/monitoring/grafana.yaml'
-                }
-            }
-        }
+        // ❌ DELETED: "Deploy Monitoring Stack" stage is gone.
+        // We now rely on the External Grafana Server (Terraform) instead.
 
         stage('Deploy to K3s') {
             steps {
@@ -72,11 +52,12 @@ pipeline {
                         'metrics-service'
                     ]
 
-                    env.KUBECONFIG = '/var/lib/jenkins/.kube/config'
-
                     // Apply configs and NATS messaging
                     sh 'kubectl apply -f k8s/config.yaml'
                     sh 'kubectl apply -f k8s/nats.yaml'
+
+                    // Wait for NATS to prevent connection errors
+                    sh 'kubectl wait --for=condition=ready pod -l app=nats --timeout=60s || true'
 
                     // Deploy microservices
                     services.each { service ->
@@ -93,9 +74,8 @@ pipeline {
             steps {
                 script {
                     echo '--- Verifying Deployments ---'
-                    // Check if pods are running
-                    sh 'kubectl get pods -n monitoring'
                     sh 'kubectl get pods -n default'
+                    sh 'kubectl top nodes || echo "Metrics not ready yet"'
                 }
             }
         }
@@ -104,9 +84,10 @@ pipeline {
     post {
         success {
             echo '✅ Deployment successful!'
-            // Note: Replace <master-ip> with your actual public IP in the output below
-            echo "Prometheus is available at port 30090"
-            echo "Grafana is available at port 30030 (login: admin/admin123)"
+            echo '---------------------------------------------------'
+            echo '🌍 App is running on the Master Node.'
+            echo '📊 Monitoring is handled by your External Grafana Server.'
+            echo '---------------------------------------------------'
         }
         failure {
             echo '❌ Deployment failed. Check logs above.'
