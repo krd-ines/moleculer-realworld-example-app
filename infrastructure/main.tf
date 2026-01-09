@@ -259,17 +259,18 @@ while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done
 apt-get update
 apt-get install -y iptables-persistent openjdk-17-jre docker.io unzip wget net-tools
 
-echo "--- [STEP 2] NETWORK CONFIGURATION ---"
+echo "--- [STEP 2] NETWORK CONFIGURATION (NAT) ---"
 sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-iptables -F
-iptables -t nat -F
-iptables -t nat -I POSTROUTING 1 -s 10.0.0.0/16 -o ens5 -j MASQUERADE
-iptables -I FORWARD 1 -s 10.0.0.0/16 -j ACCEPT
-iptables -I FORWARD 1 -m state --state ESTABLISHED,RELATED -j ACCEPT
-iptables -A INPUT -p tcp --dport 32448 -j ACCEPT
-echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
-echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | debconf-set-selections
+
+# Detect the active internet-facing interface automatically
+INTERFACE=$(ip route get 8.8.8.8 | awk -- '{printf $5}')
+iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE
+iptables -A FORWARD -i $INTERFACE -m state --state RELATED,ESTABLISHED -j ACCEPT
+iptables -A FORWARD -s 10.0.0.0/16 -j ACCEPT
+
+# Save rules so they persist on reboot
+apt-get install -y iptables-persistent
 netfilter-persistent save
 
 echo "--- [STEP 3] INSTALL K3S ---"
@@ -414,7 +415,7 @@ dpkg -i -E ./amazon-cloudwatch-agent.deb
 # 2. Create directory and write the config (Clean version)
 mkdir -p /opt/aws/amazon-cloudwatch-agent/etc/
 
-cat <<JSON > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+cat <<'JSON' > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
 {
   "agent": {
     "metrics_collection_interval": 60,
@@ -434,7 +435,9 @@ cat <<JSON > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
       },
       "disk": {
         "measurement": ["disk_used_percent"],
-        "resources": ["/"]
+        "resources": ["/"],
+        "ignore_file_system_types": ["sysfs", "devtmpfs"],
+        "drop_device": true
       }
     }
   }
@@ -478,6 +481,12 @@ resource "aws_instance" "app_services" {
 
   user_data = <<-EOF
 #!/bin/bash
+echo "Waiting for internet access via Master NAT..."
+until curl -s --connect-timeout 5 https://8.8.8.8 > /dev/null; do
+  echo "Still waiting for NAT... (checking every 5s)"
+  sleep 5
+done
+echo "Internet is UP!"
 # Redirect output to log file
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
@@ -534,7 +543,9 @@ cat <<'EOT' > /opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json
       },
       "disk": {
         "measurement": ["disk_used_percent"],
-        "resources": ["/", "/var/lib/rancher"]
+        "resources": ["/"],
+        "ignore_file_system_types": ["sysfs", "devtmpfs"],
+        "drop_device": true
       }
     }
   }
@@ -577,12 +588,16 @@ resource "aws_instance" "db_instance" {
   iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
   vpc_security_group_ids = [aws_security_group.db_sg.id]
   key_name               = "vockey"
-
-  # Ensure the Master Node is ready first so logs can flow
   depends_on             = [aws_instance.master_node]
 
   user_data = <<-EOF
 #!/bin/bash
+echo "Waiting for internet access via Master NAT..."
+until curl -s --connect-timeout 5 https://8.8.8.8 > /dev/null; do
+  echo "Still waiting for NAT... (checking every 5s)"
+  sleep 5
+done
+echo "Internet is UP!"
 # Redirect all output to our custom log file
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
@@ -671,10 +686,9 @@ cat <<'EOT' > /opt/aws/amazon-cloudwatch-agent/bin/cloudwatch-config.json
       },
       "disk": {
         "measurement": ["disk_used_percent"],
-        "resources": [
-            "/",
-            "/var/lib/mongodb"
-        ]
+        "resources": ["/"],
+        "ignore_file_system_types": ["sysfs", "devtmpfs"],
+        "drop_device": true
       }
     }
   }
@@ -744,7 +758,7 @@ resource "aws_route_table_association" "private_db_assoc" {
 
 # --- 7. MONITORING DASHBOARD ---
 resource "aws_cloudwatch_dashboard" "lab_monitor" {
-  dashboard_name = "DevOps-Lab-Monitor-Final"
+  dashboard_name = "DevOps-Lab-Monitor-Dynamic"
   dashboard_body = jsonencode({
     widgets = [
       # --- ROW 1: MASTER NODE ---
@@ -752,30 +766,26 @@ resource "aws_cloudwatch_dashboard" "lab_monitor" {
         type   = "metric", x = 0, y = 0, width = 8, height = 6
         properties = {
           metrics = [
-            # Note: CPU requires "cpu" and "InstanceId" dimensions
             ["CWAgent", "cpu_usage_user", "InstanceId", aws_instance.master_node.id, "cpu", "cpu-total", { label: "Master CPU %" }]
           ]
-          view = "timeSeries", region = var.aws_region, title = "Master - CPU Performance"
+          view = "timeSeries", region = var.aws_region, title = "Master - CPU"
         }
       },
       {
         type   = "metric", x = 8, y = 0, width = 8, height = 6
         properties = {
           metrics = [
-            # Memory usually only needs InstanceId
             ["CWAgent", "mem_used_percent", "InstanceId", aws_instance.master_node.id, { label: "Master RAM %" }]
           ]
-          view = "timeSeries", region = var.aws_region, title = "Master - RAM Usage"
+          view = "timeSeries", region = var.aws_region, title = "Master - RAM"
         }
       },
       {
         type   = "metric", x = 16, y = 0, width = 8, height = 6
         properties = {
           metrics = [
-            # Disk is tricky: It needs InstanceId, device, fstype, and path.
-            # On Ubuntu/AWS, the root is usually nvme0n1p1 or xvda1.
-            # If data doesn't show, check "All Metrics" to see your specific device name.
-            ["CWAgent", "disk_used_percent", "InstanceId", aws_instance.master_node.id, "device", "nvme0n1p1", "fstype", "ext4", "path", "/", { label: "Master Disk /" }]
+            # DYNAMIC: Only InstanceId and Path are used as dimensions
+            ["CWAgent", "disk_used_percent", "InstanceId", aws_instance.master_node.id, "path", "/", { label: "Master Root Disk %" }]
           ]
           view = "timeSeries", region = var.aws_region, title = "Master - Disk Usage"
         }
@@ -795,10 +805,10 @@ resource "aws_cloudwatch_dashboard" "lab_monitor" {
         type   = "metric", x = 12, y = 6, width = 12, height = 6
         properties = {
           metrics = [
-            # Mapping the specific MongoDB volume you mounted
-            ["CWAgent", "disk_used_percent", "InstanceId", aws_instance.db_instance.id, "path", "/var/lib/mongodb", "device", "nvme1n1", "fstype", "ext4", { label: "MongoDB Storage %" }]
+            # DYNAMIC: Tracks the mount point directly
+            ["CWAgent", "disk_used_percent", "InstanceId", aws_instance.db_instance.id, "path", "/var/lib/mongodb", { label: "MongoDB Volume %" }]
           ]
-          view = "timeSeries", region = var.aws_region, title = "Database - Disk Usage"
+          view = "timeSeries", region = var.aws_region, title = "Database - Storage Usage"
         }
       },
 
@@ -817,169 +827,163 @@ resource "aws_cloudwatch_dashboard" "lab_monitor" {
   })
 }
 
-# --- 8. GRAFANA SETUP ---
-# A. FIX PERMISSIONS: Attach CloudWatch Policy to the existing LabRole
-# This ensures ALL your instances (Master, DB, Grafana) have permission to Read/Write metrics.
-resource "aws_iam_role_policy_attachment" "lab_role_cloudwatch_fix" {
-  role       = "LabRole"
-  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
-}
-
-# B. SECURITY GROUP
-resource "aws_security_group" "grafana_sg" {
-  name        = "grafana-sg"
-  description = "Allow Grafana Access"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  ingress {
-    from_port   = 3000
-    to_port     = 3000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-# C. GRAFANA SERVER
-resource "aws_instance" "grafana_server" {
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.public.id
-  vpc_security_group_ids = [aws_security_group.grafana_sg.id]
-  iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
-  key_name               = "vockey"
-
-  tags = { Name = "Grafana-Dashboard" }
-
-  user_data = <<-EOF
-    #!/bin/bash
-    exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
-
-    # 1. Install Grafana
-    apt-get update
-    apt-get install -y apt-transport-https software-properties-common wget
-    mkdir -p /etc/apt/keyrings/
-    wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | tee /etc/apt/keyrings/grafana.gpg > /dev/null
-    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | tee -a /etc/apt/sources.list.d/grafana.list
-    apt-get update
-    apt-get install -y grafana
-
-    # 2. Configure CloudWatch Data Source
-    mkdir -p /etc/grafana/provisioning/datasources
-    cat <<EOT > /etc/grafana/provisioning/datasources/cloudwatch.yaml
-    apiVersion: 1
-    datasources:
-      - name: CloudWatch
-        type: cloudwatch
-        isDefault: true
-        jsonData:
-          defaultRegion: us-east-1
-          authType: default
-    EOT
-
-    # 3. Configure Dashboard Provider
-    mkdir -p /etc/grafana/provisioning/dashboards
-    cat <<EOT > /etc/grafana/provisioning/dashboards/main.yaml
-    apiVersion: 1
-    providers:
-      - name: 'Lab Dashboards'
-        orgId: 1
-        folder: ''
-        type: file
-        options:
-          path: /var/lib/grafana/dashboards
-    EOT
-
-    # 4. Create the Dashboard JSON File
-    mkdir -p /var/lib/grafana/dashboards
-    cat <<EOT > /var/lib/grafana/dashboards/lab_dashboard.json
-    {
-      "title": "DevOps Lab Monitor (Auto)",
-      "schemaVersion": 36,
-      "panels": [
-        {
-          "title": "Master Node - CPU Usage",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-          "targets": [
-            {
-              "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
-              "region": "us-east-1",
-              "namespace": "CWAgent",
-              "metricName": "cpu_usage_user",
-              "dimensions": { "InstanceId": "${aws_instance.master_node.id}" },
-              "statistic": "Average",
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "title": "Master Node - RAM Usage",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-          "targets": [
-            {
-              "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
-              "region": "us-east-1",
-              "namespace": "CWAgent",
-              "metricName": "mem_used_percent",
-              "dimensions": { "InstanceId": "${aws_instance.master_node.id}" },
-              "statistic": "Average",
-              "refId": "B"
-            }
-          ]
-        },
-        {
-          "title": "Database - CPU Usage",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-          "targets": [
-            {
-              "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
-              "region": "us-east-1",
-              "namespace": "CWAgent",
-              "metricName": "cpu_usage_user",
-              "dimensions": { "InstanceId": "${aws_instance.db_instance.id}" },
-              "statistic": "Average",
-              "refId": "C"
-            }
-          ]
-        },
-        {
-          "title": "Database - MongoDB Disk Usage",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-          "targets": [
-            {
-              "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
-              "region": "us-east-1",
-              "namespace": "CWAgent",
-              "metricName": "disk_used_percent",
-              "dimensions": { "InstanceId": "${aws_instance.db_instance.id}", "path": "/var/lib/mongodb" },
-              "statistic": "Average",
-              "refId": "D"
-            }
-          ]
-        }
-      ]
-    }
-    EOT
-
-    # 5. Set Permissions and Start
-    chown -R grafana:grafana /var/lib/grafana/dashboards
-    systemctl daemon-reload
-    systemctl enable grafana-server
-    systemctl start grafana-server
-  EOF
-}
+# # --- 8. GRAFANA SETUP --
+#
+# # B. SECURITY GROUP
+# resource "aws_security_group" "grafana_sg" {
+#   name        = "grafana-sg"
+#   description = "Allow Grafana Access"
+#   vpc_id      = aws_vpc.main.id
+#
+#   ingress {
+#     from_port   = 22
+#     to_port     = 22
+#     protocol    = "tcp"
+#     cidr_blocks = ["0.0.0.0/0"]
+#   }
+#   ingress {
+#     from_port   = 3000
+#     to_port     = 3000
+#     protocol    = "tcp"
+#     cidr_blocks = ["0.0.0.0/0"]
+#   }
+#   egress {
+#     from_port   = 0
+#     to_port     = 0
+#     protocol    = "-1"
+#     cidr_blocks = ["0.0.0.0/0"]
+#   }
+# }
+#
+# # C. GRAFANA SERVER
+# resource "aws_instance" "grafana_server" {
+#   ami                    = data.aws_ami.ubuntu.id
+#   instance_type          = "t2.micro"
+#   subnet_id              = aws_subnet.public.id
+#   vpc_security_group_ids = [aws_security_group.grafana_sg.id]
+#   iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
+#   key_name               = "vockey"
+#
+#   tags = { Name = "Grafana-Dashboard" }
+#
+#   user_data = <<-EOF
+#     #!/bin/bash
+#     exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+#
+#     # 1. Install Grafana
+#     apt-get update
+#     apt-get install -y apt-transport-https software-properties-common wget
+#     mkdir -p /etc/apt/keyrings/
+#     wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | tee /etc/apt/keyrings/grafana.gpg > /dev/null
+#     echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | tee -a /etc/apt/sources.list.d/grafana.list
+#     apt-get update
+#     apt-get install -y grafana
+#
+#     # 2. Configure CloudWatch Data Source
+#     mkdir -p /etc/grafana/provisioning/datasources
+#     cat <<EOT > /etc/grafana/provisioning/datasources/cloudwatch.yaml
+#     apiVersion: 1
+#     datasources:
+#       - name: CloudWatch
+#         type: cloudwatch
+#         isDefault: true
+#         jsonData:
+#           defaultRegion: us-east-1
+#           authType: default
+#     EOT
+#
+#     # 3. Configure Dashboard Provider
+#     mkdir -p /etc/grafana/provisioning/dashboards
+#     cat <<EOT > /etc/grafana/provisioning/dashboards/main.yaml
+#     apiVersion: 1
+#     providers:
+#       - name: 'Lab Dashboards'
+#         orgId: 1
+#         folder: ''
+#         type: file
+#         options:
+#           path: /var/lib/grafana/dashboards
+#     EOT
+#
+#     # 4. Create the Dashboard JSON File
+#     mkdir -p /var/lib/grafana/dashboards
+#     cat <<EOT > /var/lib/grafana/dashboards/lab_dashboard.json
+#     {
+#       "title": "DevOps Lab Monitor (Auto)",
+#       "schemaVersion": 36,
+#       "panels": [
+#         {
+#           "title": "Master Node - CPU Usage",
+#           "type": "timeseries",
+#           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+#           "targets": [
+#             {
+#               "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
+#               "region": "us-east-1",
+#               "namespace": "CWAgent",
+#               "metricName": "cpu_usage_user",
+#               "dimensions": { "InstanceId": "${aws_instance.master_node.id}" },
+#               "statistic": "Average",
+#               "refId": "A"
+#             }
+#           ]
+#         },
+#         {
+#           "title": "Master Node - RAM Usage",
+#           "type": "timeseries",
+#           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+#           "targets": [
+#             {
+#               "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
+#               "region": "us-east-1",
+#               "namespace": "CWAgent",
+#               "metricName": "mem_used_percent",
+#               "dimensions": { "InstanceId": "${aws_instance.master_node.id}" },
+#               "statistic": "Average",
+#               "refId": "B"
+#             }
+#           ]
+#         },
+#         {
+#           "title": "Database - CPU Usage",
+#           "type": "timeseries",
+#           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+#           "targets": [
+#             {
+#               "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
+#               "region": "us-east-1",
+#               "namespace": "CWAgent",
+#               "metricName": "cpu_usage_user",
+#               "dimensions": { "InstanceId": "${aws_instance.db_instance.id}" },
+#               "statistic": "Average",
+#               "refId": "C"
+#             }
+#           ]
+#         },
+#         {
+#           "title": "Database - MongoDB Disk Usage",
+#           "type": "timeseries",
+#           "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+#           "targets": [
+#             {
+#               "datasource": { "type": "cloudwatch", "uid": "CloudWatch" },
+#               "region": "us-east-1",
+#               "namespace": "CWAgent",
+#               "metricName": "disk_used_percent",
+#               "dimensions": { "InstanceId": "${aws_instance.db_instance.id}", "path": "/var/lib/mongodb" },
+#               "statistic": "Average",
+#               "refId": "D"
+#             }
+#           ]
+#         }
+#       ]
+#     }
+#     EOT
+#
+#     # 5. Set Permissions and Start
+#     chown -R grafana:grafana /var/lib/grafana/dashboards
+#     systemctl daemon-reload
+#     systemctl enable grafana-server
+#     systemctl start grafana-server
+#   EOF
+# }

@@ -14,10 +14,10 @@ output "application_url" {
   value       = "http://${aws_instance.master_node.public_ip}:32448/"
 }
 
-output "grafana_dashboard_url" {
-  description = "Direct link to the Grafana Monitoring Dashboard"
-  value       = "http://${aws_instance.grafana_server.public_ip}:3000"
-}
+# output "grafana_dashboard_url" {
+#   description = "Direct link to the Grafana Monitoring Dashboard"
+#   value       = "http://${aws_instance.grafana_server.public_ip}:3000"
+# }
 
 output "worker_nodes_private_ips" {
   description = "Private IPs of the Service Nodes"
@@ -28,7 +28,7 @@ output "database_private_ip" {
   description = "Private IP of the Database"
   value       = aws_instance.db_instance.private_ip
 }
-output "grafana_url" {
-  value = "http://${aws_instance.grafana_server.public_ip}:3000"
-}
+# output "grafana_url" {
+#   value = "http://${aws_instance.grafana_server.public_ip}:3000"
+# }
 
